@@ -62,7 +62,9 @@ local UI_Frames = {
     AutoAdvert = nil,
     MenuBind = nil,
     ThemeColor = nil,
-    DiscordGate = nil
+    DiscordGate = nil,
+    PlayerStats = nil,
+    PlayerStatsError = nil
 }
 
 local Cache = {
@@ -79,43 +81,19 @@ local AFKStats = {
     state              = "ACTIVE",
     idleSince          = 0,
     afkSince           = 0,
-    lastPos            = nil,
     lastAng            = nil,
 
     AFK_THRESHOLD      = 30,
     FLUSH_INTERVAL     = 10,
-    MOVE_EPS_SQ        = 4,
-    ANG_EPS            = 2,
-    VEL_EPS_SQ         = 25,
 
     pendingSeconds     = 0,
     lastFlushTime      = 0,
     dbCache            = nil,
     dbLoaded           = false,
-    dbPath             = nil,
     MAX_DAYS_KEPT      = 90,
 
     wmFlashTime        = 0,
-
-    samples            = {},
-    samplesCap         = 50,
-    samplesIdx         = 0,
-    sampleNextTime     = 0,
-    sampleInterval     = 0.1,
-
-    lastMeaningfulAction = 0,
-    lastWeaponClass    = nil,
-    lastAttackTime     = 0,
-    lastChatTime       = 0,
-
-    afkReason          = "",
-    lastCheckScores    = nil,
-
-    DET_LINEAR_THRES   = 0.85,
-    DET_ORBIT_THRES    = 0.85,
-    DET_KEYENT_THRES   = 0.85,
-    DET_JITTER_THRES   = 0.85,
-    DET_ABSENCE_SEC    = 25,
+    afkReason          = ""
 }
 
 local function AFK_FormatHMS(sec)
@@ -255,7 +233,14 @@ local function ClampColorChannel(n) return math.Clamp(math.Round(tonumber(n) or 
 
 local function SafeSimpleText(text, font, x, y, col, ax, ay)
     if not draw or not draw.SimpleText then return 0, 0 end
-    return draw.SimpleText(tostring(text or ""), font or "DermaDefault", tonumber(x) or 0, tonumber(y) or 0, col or color_white, ax or TEXT_ALIGN_LEFT, ay or TEXT_ALIGN_TOP)
+    local str = tostring(text or "")
+    font = font or "DermaDefault"
+    
+    surface.SetFont(font)
+    local w = surface.GetTextSize(str)
+    if not w then font = "DermaDefault" end
+    
+    return draw.SimpleText(str, font, tonumber(x) or 0, tonumber(y) or 0, col or color_white, ax or TEXT_ALIGN_LEFT, ay or TEXT_ALIGN_TOP)
 end
 
 local UI = {
@@ -298,7 +283,7 @@ local DATA = {
     { name = "Список администрации" },
     { name = "Игроки в AFK" },
     { name = "Логи пропов" },
-    { name = "Статистика AFK" },
+    { name = "Админ-статистика AFK" },
     {
         name = "Настройки",
         items = {
@@ -437,12 +422,12 @@ local BAN_RANK_LIMITS = {
 }
 
 local OPT_PRESETS = {
-    { name = "Экстренный FPS", desc = "Максимально разгружает клиент в критических ситуациях", color = Color(255, 43, 43), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 2, r_rootlod = 2, r_shadows = 0, mat_specular = 0, mat_bumpmap = 0, r_3dsky = 0, r_waterdrawreflection = 0, r_waterdrawrefraction = 0, r_decals = 0, mp_decals = 0, r_drawmodeldecals = 0, r_dynamic = 0, r_drawdetailprops = 0, cl_ejectbrass = 0, at_opt_drawdist_ply = 1000, at_opt_drawdist_ent = 700, at_opt_drawdist_prop = 800, at_opt_hide_ragdolls = 1, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 1, at_opt_smd_enabled = 1 } },
-    { name = "Слабый ПК / Ноутбук", desc = "Жесткая оптимизация для стабильной игры на слабом железе", color = Color(255, 120, 120), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 2, r_rootlod = 2, r_shadows = 0, mat_specular = 0, mat_bumpmap = 0, r_3dsky = 0, r_waterdrawreflection = 0, r_waterdrawrefraction = 0, r_decals = 64, mp_decals = 64, r_drawmodeldecals = 0, r_dynamic = 0, r_drawdetailprops = 0, cl_ejectbrass = 0, at_opt_drawdist_ply = 1800, at_opt_drawdist_ent = 1200, at_opt_drawdist_prop = 1400, at_opt_hide_ragdolls = 1, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 1, at_opt_smd_enabled = 1 } },
-    { name = "Повседневная администрация", desc = "Оптимальный режим для долгой ежедневной работы администратора", color = Color(170, 234, 89), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 1, r_rootlod = 1, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 256, mp_decals = 256, r_drawmodeldecals = 1, r_dynamic = 0, r_drawdetailprops = 1, cl_ejectbrass = 0, at_opt_drawdist_ply = 3200, at_opt_drawdist_ent = 2600, at_opt_drawdist_prop = 2400, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 1 } },
-    { name = "Универсальный", desc = "Хороший баланс между читаемостью сцены и производительностью", color = Color(114, 191, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 1, r_rootlod = 1, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 512, mp_decals = 512, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 0, at_opt_drawdist_ply = 4200, at_opt_drawdist_ent = 3200, at_opt_drawdist_prop = 3000, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 1 } },
-    { name = "Качественная картинка", desc = "Для спокойной игры, когда важнее визуал, чем максимальный FPS", color = Color(120, 210, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 0, r_rootlod = 0, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 1024, mp_decals = 1024, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 1, at_opt_drawdist_ply = 0, at_opt_drawdist_ent = 0, at_opt_drawdist_prop = 0, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 0, at_opt_atb_enabled = 1, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 0 } },
-    { name = "Максимальное качество", desc = "Почти без ограничений: для мощных ПК и лучшей картинки", color = Color(190, 160, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 0, r_rootlod = 0, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 1, r_waterdrawrefraction = 1, r_decals = 2048, mp_decals = 2048, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 1, at_opt_drawdist_ply = 0, at_opt_drawdist_ent = 0, at_opt_drawdist_prop = 0, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 0, at_opt_atb_enabled = 0, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 0 } }
+    { name = "Очень низкие", desc = "Максимально разгружает клиент в критических ситуациях", color = Color(255, 43, 43), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 2, r_rootlod = 2, r_shadows = 0, mat_specular = 0, mat_bumpmap = 0, r_3dsky = 0, r_waterdrawreflection = 0, r_waterdrawrefraction = 0, r_decals = 0, mp_decals = 0, r_drawmodeldecals = 0, r_dynamic = 0, r_drawdetailprops = 0, cl_ejectbrass = 0, at_opt_drawdist_ply = 1000, at_opt_drawdist_ent = 700, at_opt_drawdist_prop = 800, at_opt_hide_ragdolls = 1, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 1, at_opt_smd_enabled = 1 } },
+    { name = "Низкие", desc = "Жесткая оптимизация для стабильной игры на слабом железе", color = Color(255, 120, 120), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 2, r_rootlod = 2, r_shadows = 0, mat_specular = 0, mat_bumpmap = 0, r_3dsky = 0, r_waterdrawreflection = 0, r_waterdrawrefraction = 0, r_decals = 64, mp_decals = 64, r_drawmodeldecals = 0, r_dynamic = 0, r_drawdetailprops = 0, cl_ejectbrass = 0, at_opt_drawdist_ply = 1800, at_opt_drawdist_ent = 1200, at_opt_drawdist_prop = 1400, at_opt_hide_ragdolls = 1, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 1, at_opt_smd_enabled = 1 } },
+    { name = "Средние", desc = "Оптимальный режим для долгой ежедневной работы администратора", color = Color(170, 234, 89), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 1, r_rootlod = 1, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 256, mp_decals = 256, r_drawmodeldecals = 1, r_dynamic = 0, r_drawdetailprops = 1, cl_ejectbrass = 0, at_opt_drawdist_ply = 3200, at_opt_drawdist_ent = 2600, at_opt_drawdist_prop = 2400, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 1, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 1 } },
+    { name = "Высокие", desc = "Хороший баланс между читаемостью сцены и производительностью", color = Color(114, 191, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 1, r_rootlod = 1, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 512, mp_decals = 512, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 0, at_opt_drawdist_ply = 4200, at_opt_drawdist_ent = 3200, at_opt_drawdist_prop = 3000, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 1, at_opt_atb_enabled = 1, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 1 } },
+    { name = "Очень высокие", desc = "Для спокойной игры, когда важнее визуал, чем максимальный FPS", color = Color(120, 210, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 0, r_rootlod = 0, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 0, r_waterdrawrefraction = 1, r_decals = 1024, mp_decals = 1024, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 1, at_opt_drawdist_ply = 0, at_opt_drawdist_ent = 0, at_opt_drawdist_prop = 0, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 0, at_opt_atb_enabled = 1, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 0 } },
+    { name = "Ультра", desc = "Почти без ограничений: для мощных ПК и лучшей картинки", color = Color(190, 160, 255), cvars = { cl_threaded_bone_setup = 1, cl_threaded_client_leaf_system = 1, mat_picmip = 0, r_rootlod = 0, r_shadows = 1, mat_specular = 1, mat_bumpmap = 1, r_3dsky = 1, r_waterdrawreflection = 1, r_waterdrawrefraction = 1, r_decals = 2048, mp_decals = 2048, r_drawmodeldecals = 1, r_dynamic = 1, r_drawdetailprops = 1, cl_ejectbrass = 1, at_opt_drawdist_ply = 0, at_opt_drawdist_ent = 0, at_opt_drawdist_prop = 0, at_opt_hide_ragdolls = 0, at_opt_ffc_enabled = 0, at_opt_atb_enabled = 0, at_opt_pms_enabled = 0, at_opt_dpr_enabled = 0, at_opt_smd_enabled = 0 } }
 }
 
 local function ApplyOptPreset(preset)
@@ -489,12 +474,11 @@ local function ApplyThemeAccentColors() THEME.green, THEME.gold = GetCookieColor
 ApplyThemeAccentColors()
 
 local function CreateFonts()
-    for _, v in ipairs({
-        { "AT.Bold.14", 14, "Nunito Bold" }, { "AT.Bold.16", 16, "Nunito Bold" }, { "AT.Bold.18", 18, "Nunito Bold" }, { "AT.Bold.20", 20, "Nunito Bold" },
-        { "AT.Bold.22", 22, "Nunito Bold" }, { "AT.Bold.24", 24, "Nunito Bold" }, { "AT.Bold.28", 28, "Nunito Bold" }, { "AT.Bold.30", 30, "Nunito Bold" },
-        { "AT.Bold.36",  36, "Nunito Bold" }, { "AT.Bold.45", 45, "Nunito Bold" }, { "AT.Light.14", 14, "Nunito Bold" }, { "AT.Light.16", 16, "Nunito Bold" }, { "AT.Light.18", 18, "Nunito Bold" },
-        { "AT.Light.20", 20, "Nunito Bold" }, { "AT.Light.24", 24, "Nunito Bold" }
-    }) do surface.CreateFont(v[1], { font = v[3], size = ATScale(v[2]), weight = 700, extended = true, antialias = true }) end
+    for i = 1, 50 do
+        local size = ATScale(i)
+        surface.CreateFont("AT.Bold." .. i, { font = "Nunito Bold", size = size, weight = 700, extended = true, antialias = true })
+        surface.CreateFont("AT.Light." .. i, { font = "Nunito Bold", size = size, weight = 700, extended = true, antialias = true })
+    end
 end
 CreateFonts()
 hook.Add("OnScreenSizeChanged", "AdminTool.RecreateFonts", function() timer.Simple(0, CreateFonts) end)
@@ -863,38 +847,13 @@ local function AFK_GetDayKey(ts)
     return os.time(d)
 end
 
-local function AFK_GetDBPath()
-    if AFKStats.dbPath then return AFKStats.dbPath end
-    local p = LocalPlayer()
-    if not IsValid(p) then return nil end
-    local sid64 = p:SteamID64()
-    if not sid64 or sid64 == "0" or sid64 == "" then return nil end
-    AFKStats.dbPath = "admintool/afk_stats/" .. sid64 .. ".json"
-    return AFKStats.dbPath
-end
-
-local function AFK_EnsureDir()
-    if not file.Exists("admintool", "DATA") then file.CreateDir("admintool") end
-    if not file.Exists("admintool/afk_stats", "DATA") then file.CreateDir("admintool/afk_stats") end
-end
-
-local function AFK_LoadDB()
-    if AFKStats.dbLoaded then return AFKStats.dbCache end
-    AFK_EnsureDir()
-    local path = AFK_GetDBPath()
-    AFKStats.dbCache = { days = {}, createdAt = os.time() }
-    if path and file.Exists(path, "DATA") then
-        local raw = file.Read(path, "DATA")
-        if raw and raw ~= "" then
-            local ok, parsed = pcall(util.JSONToTable, raw)
-            if ok and istable(parsed) and istable(parsed.days) then
-                AFKStats.dbCache = parsed
-                if not AFKStats.dbCache.createdAt then AFKStats.dbCache.createdAt = os.time() end
-            end
-        end
+local function AFK_SanitizeDays(days)
+    for k, v in pairs(days) do
+        local n = math.floor(tonumber(v) or 0)
+        if n <= 0 then days[k] = nil
+        elseif n > 86400 then days[k] = 86400
+        else days[k] = n end
     end
-    AFKStats.dbLoaded = true
-    return AFKStats.dbCache
 end
 
 local function AFK_PruneOldDays(db)
@@ -907,22 +866,52 @@ local function AFK_PruneOldDays(db)
 end
 
 local function AFK_SaveDB()
-    local db = AFKStats.dbCache
-    if not db then return end
-    local path = AFK_GetDBPath()
-    if not path then return end
-    AFK_PruneOldDays(db)
-    AFK_EnsureDir()
-    local ok, encoded = pcall(util.TableToJSON, db, false)
-    if ok and encoded then
-        file.Write(path, encoded)
-    end
+    if not AFKStats.dbLoaded or not AFKStats.dbCache then return end
+    local sid = GetLocalSteamID()
+    local p = LocalPlayer()
+    if not sid or not IsValid(p) then return end
+
+    AFK_PruneOldDays(AFKStats.dbCache)
+    
+    HTTP({
+        method = "POST",
+        url = AT.DISCORD_API_BASE .. "/afk/sync",
+        headers = { ["Content-Type"] = "application/json" },
+        body = util.TableToJSON({ steamid = sid, nick = p:Nick(), days = AFKStats.dbCache.days })
+    })
+end
+
+local function AFK_LoadDB(callback)
+    if AFKStats.dbLoaded then if callback then callback() end return end
+    local sid = GetLocalSteamID()
+    if not sid then return end
+
+    http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. sid, 
+        function(body, len, headers, code)
+            local ok, parsed = pcall(util.JSONToTable, body)
+            local rawDays = (code == 200 and ok and parsed and parsed.ok and parsed.data) and parsed.data.days or {}
+            
+            local normDays = {}
+            for k, v in pairs(rawDays) do
+                local n = math.floor(tonumber(v) or 0)
+                if n > 0 then normDays[tostring(k)] = math.min(n, 86400) end
+            end
+            
+            AFKStats.dbCache = { days = normDays, createdAt = (parsed and parsed.data and parsed.data.updated_at) or os.time() }
+            AFKStats.dbLoaded = true
+            if callback then callback() end
+        end,
+        function()
+            AFKStats.dbCache = { days = {}, createdAt = os.time() }
+            AFKStats.dbLoaded = true
+            if callback then callback() end
+        end
+    )
 end
 
 local function AFK_FlushPending()
-    if AFKStats.pendingSeconds <= 0 then return end
-    local db = AFK_LoadDB()
-    if not db then return end
+    if AFKStats.pendingSeconds <= 0 or not AFKStats.dbLoaded then return end
+    local db = AFKStats.dbCache
     local today = tostring(AFK_GetDayKey(os.time()))
     db.days[today] = (db.days[today] or 0) + AFKStats.pendingSeconds
     AFKStats.pendingSeconds = 0
@@ -930,8 +919,56 @@ local function AFK_FlushPending()
     AFK_SaveDB()
 end
 
+concommand.Add("at_afk_debug", function()
+    MsgC(Color(120, 200, 255), "\n=== AFK DEBUG ===\n")
+    MsgC(color_white, "LocalPlayer SteamID: " .. tostring(GetLocalSteamID()) .. "\n")
+    MsgC(color_white, "dbLoaded: " .. tostring(AFKStats.dbLoaded) .. "\n")
+    if AFKStats.dbCache and AFKStats.dbCache.days then
+        local cnt, total = 0, 0
+        for k, v in pairs(AFKStats.dbCache.days) do
+            cnt = cnt + 1; total = total + (tonumber(v) or 0)
+        end
+        MsgC(color_white, "Total days in API Cache: " .. cnt .. ", total seconds: " .. total .. "\n")
+    end
+    MsgC(color_white, "pendingSeconds: " .. tostring(AFKStats.pendingSeconds) .. "\n")
+    MsgC(color_white, "State: " .. tostring(AFKStats.state) .. "\n")
+    MsgC(Color(120, 200, 255), "=================\n\n")
+end)
+
+concommand.Add("at_afk_reload", function()
+    AFKStats.dbLoaded = false
+    AFKStats.dbCache = nil
+    AFK_LoadDB(function()
+        MsgC(Color(80, 220, 120), "[AdminTool] AFK: данные успешно загружены из API.\n")
+    end)
+end)
+
+local function AFK_WipeStats()
+    AFKStats.dbCache = { days = {}, createdAt = os.time() }
+    AFKStats.pendingSeconds = 0
+    AFKStats.dbLoaded = true
+    AFK_SaveDB()
+end
+
+local function AFK_StartInit()
+    AFKStats.dbLoaded = false
+    AFKStats.dbCache = nil
+    AFKStats.lastFlushTime = CurTime()
+
+    local TIMER_ID = "AdminTool.AFKChronicleLoad"
+    timer.Create(TIMER_ID, 1, 0, function()
+        local sid = GetLocalSteamID()
+        if sid then
+            timer.Remove(TIMER_ID)
+            AFK_LoadDB(function()
+                AFKStats.lastFlushTime = CurTime()
+            end)
+        end
+    end)
+end
+
 local function AFK_GetTotals()
-    local db = AFK_LoadDB()
+    local db = AFKStats.dbCache
     if not db or not db.days then return { today = 0, week = 0, month = 0, allTime = 0, avgPerDay = 0, dayCount = 0 } end
 
     local now = os.time()
@@ -968,8 +1005,48 @@ local function AFK_GetTotals()
     }
 end
 
+local function AFK_GetExternalTotals(days)
+    if not days then return { today = 0, week = 0, month = 0, allTime = 0 } end
+    local now = os.time()
+    local todayKey = AFK_GetDayKey(now)
+    local weekCutoff  = AFK_GetDayKey(now - 6  * 86400)
+    local monthCutoff = AFK_GetDayKey(now - 29 * 86400)
+
+    local today, week, month, allTime = 0, 0, 0, 0
+    for k, v in pairs(days) do
+        local kn, vn = tonumber(k), tonumber(v) or 0
+        if kn and vn > 0 then
+            allTime = allTime + vn
+            if kn == todayKey then today = today + vn end
+            if kn >= weekCutoff then week = week + vn end
+            if kn >= monthCutoff then month = month + vn end
+        end
+    end
+    return { today = today, week = week, month = month, allTime = allTime }
+end
+
+local function AFK_GetExternalLastNDays(days, n)
+    local out = {}
+    local now = os.time()
+    local todayKey = AFK_GetDayKey(now)
+    local weekdays = { [1] = "Вс", [2] = "Пн", [3] = "Вт", [4] = "Ср", [5] = "Чт", [6] = "Пт", [7] = "Сб" }
+    for i = n - 1, 0, -1 do
+        local k = AFK_GetDayKey(now - i * 86400)
+        local sec = (days and tonumber(days[tostring(k)])) or 0
+        local dt = os.date("*t", k)
+        table.insert(out, {
+            dayKey    = k,
+            seconds   = sec,
+            label     = weekdays[dt.wday] or "?",
+            shortDate = string.format("%02d.%02d", dt.day, dt.month),
+            isToday   = k == todayKey,
+        })
+    end
+    return out
+end
+
 local function AFK_GetLastNDays(n)
-    local db = AFK_LoadDB()
+    local db = AFKStats.dbCache
     local out = {}
     local now = os.time()
     local todayKey = AFK_GetDayKey(now)
@@ -997,230 +1074,39 @@ local function AFK_WipeStats()
     AFK_SaveDB()
 end
 
-local function AFK_RecordSample(ply, ct)
-    if ct < AFKStats.sampleNextTime then return end
-    AFKStats.sampleNextTime = ct + AFKStats.sampleInterval
-
-    local pos = ply:GetPos()
-    local ang = GetTrackedEyeAngles(ply)
-
-    local keys = 0
-    if ply:KeyDown(IN_FORWARD)  then keys = keys + 1   end
-    if ply:KeyDown(IN_BACK)     then keys = keys + 2   end
-    if ply:KeyDown(IN_MOVELEFT) then keys = keys + 4   end
-    if ply:KeyDown(IN_MOVERIGHT)then keys = keys + 8   end
-    if ply:KeyDown(IN_JUMP)     then keys = keys + 16  end
-    if ply:KeyDown(IN_DUCK)     then keys = keys + 32  end
-    if ply:KeyDown(IN_SPEED)    then keys = keys + 64  end
-    if ply:KeyDown(IN_WALK)     then keys = keys + 128 end
-    if ply:KeyDown(IN_ATTACK)   then keys = keys + 256 end
-    if ply:KeyDown(IN_ATTACK2)  then keys = keys + 512 end
-    if ply:KeyDown(IN_USE)      then keys = keys + 1024 end
-    if ply:KeyDown(IN_RELOAD)   then keys = keys + 2048 end
-
-    if ply:KeyDown(IN_LEFT)     then keys = keys + 4096 end
-    if ply:KeyDown(IN_RIGHT)    then keys = keys + 8192 end
-
-    local wep = ply:GetActiveWeapon()
-    local wepClass = IsValid(wep) and wep:GetClass() or ""
-
-    local idx = (AFKStats.samplesIdx % AFKStats.samplesCap) + 1
-    AFKStats.samples[idx] = {
-        t = ct,
-        px = pos.x, py = pos.y, pz = pos.z,
-        angY = ang.y, angP = ang.p,
-        keys = keys,
-        weapon = wepClass,
-    }
-    AFKStats.samplesIdx = idx
-
-    if wepClass ~= AFKStats.lastWeaponClass and AFKStats.lastWeaponClass ~= nil then
-        AFKStats.lastMeaningfulAction = ct
-    end
-    AFKStats.lastWeaponClass = wepClass
-
-    if ply:KeyDown(IN_ATTACK) or ply:KeyDown(IN_ATTACK2) or ply:KeyDown(IN_USE) or ply:KeyDown(IN_RELOAD) then
-        AFKStats.lastMeaningfulAction = ct
-        AFKStats.lastAttackTime = ct
-    end
-end
-
-local function AFK_GetRecentSamples(ct, windowSec)
-    local out = {}
-    local cutoff = ct - windowSec
-    for i = 1, AFKStats.samplesCap do
-        local s = AFKStats.samples[i]
-        if s and s.t >= cutoff then out[#out + 1] = s end
-    end
-    table.sort(out, function(a, b) return a.t < b.t end)
-    return out
-end
-
-local function AFK_DetectLinearMotion(samples)
-    if #samples < 20 then return 0 end
-
-    local dirs = {}
-    for i = 2, #samples do
-        local a, b = samples[i-1], samples[i]
-        local dx, dy = b.px - a.px, b.py - a.py
-        local mag = math.sqrt(dx*dx + dy*dy)
-        if mag > 0.5 then
-            dirs[#dirs + 1] = math.atan2(dy, dx)
-        end
-    end
-
-    if #dirs < 10 then return 0 end
-
-    local sumX, sumY = 0, 0
-    for _, a in ipairs(dirs) do sumX = sumX + math.cos(a); sumY = sumY + math.sin(a) end
-    local meanLen = math.sqrt(sumX*sumX + sumY*sumY) / #dirs
-
-    return math.Clamp(meanLen, 0, 1)
-end
-
-local function AFK_DetectOrbital(samples)
-    if #samples < 20 then return 0 end
-
-    local deltas = {}
-    local totalAbs = 0
-    for i = 2, #samples do
-        local d = math.AngleDifference(samples[i].angY, samples[i-1].angY)
-        deltas[#deltas + 1] = d
-        totalAbs = totalAbs + math.abs(d)
-    end
-
-    if totalAbs < 10 then return 0 end
-
-    local signedSum = 0
-    for _, d in ipairs(deltas) do signedSum = signedSum + d end
-
-    return math.Clamp(math.abs(signedSum) / totalAbs, 0, 1)
-end
-
-local function AFK_DetectKeyEntropy(samples)
-    if #samples < 30 then return 0 end
-
-    local counts = {}
-    local totalFrames = 0
-    for _, s in ipairs(samples) do
-        if s.keys ~= 0 then
-            counts[s.keys] = (counts[s.keys] or 0) + 1
-            totalFrames = totalFrames + 1
-        end
-    end
-
-    if totalFrames < #samples * 0.5 then return 0 end
-
-    local entropy = 0
-    for _, cnt in pairs(counts) do
-        local p = cnt / totalFrames
-        entropy = entropy - p * math.log(p) / math.log(2)
-    end
-
-    local suspicion = math.Clamp(1.0 - entropy / 1.5, 0, 1)
-    return suspicion
-end
-
-local function AFK_DetectMicroJitter(samples)
-    if #samples < 30 then return 0 end
-
-    local totalY, totalP, maxDelta = 0, 0, 0
-    for i = 2, #samples do
-        local dy = math.abs(math.AngleDifference(samples[i].angY, samples[i-1].angY))
-        local dp = math.abs(math.AngleDifference(samples[i].angP, samples[i-1].angP))
-        totalY = totalY + dy
-        totalP = totalP + dp
-        local d = math.max(dy, dp)
-        if d > maxDelta then maxDelta = d end
-    end
-
-    local totalMove = totalY + totalP
-
-    if totalMove < 1 then return 0 end
-
-    if maxDelta < 2.0 and totalMove < 15 then
-        return math.Clamp(1.0 - maxDelta / 2.0, 0, 1)
-    end
-
-    return 0
-end
-
-local function AFK_DetectInputAbsence(ct)
-    local since = ct - (AFKStats.lastMeaningfulAction or 0)
-    if since < AFKStats.DET_ABSENCE_SEC then return 0 end
-
-    return math.Clamp((since - AFKStats.DET_ABSENCE_SEC) / 15, 0, 1)
-end
-
-local function AFK_AnalyzeBehavior(ct)
-    local samples = AFK_GetRecentSamples(ct, 5.0)
-
-    local linear  = AFK_DetectLinearMotion(samples)
-    local orbit   = AFK_DetectOrbital(samples)
-    local keyEnt  = AFK_DetectKeyEntropy(samples)
-    local jitter  = AFK_DetectMicroJitter(samples)
-    local absence = AFK_DetectInputAbsence(ct)
-
-    local scores = { linear = linear, orbit = orbit, keyEnt = keyEnt, jitter = jitter, absence = absence }
-
-    if linear >= AFKStats.DET_LINEAR_THRES then
-        return true, "зажата клавиша движения", scores
-    end
-    if orbit >= AFKStats.DET_ORBIT_THRES then
-        return true, "камера вращается в одну сторону", scores
-    end
-    if keyEnt >= AFKStats.DET_KEYENT_THRES and absence > 0.3 then
-        return true, "однообразные нажатия клавиш", scores
-    end
-    if jitter >= AFKStats.DET_JITTER_THRES and absence > 0.3 then
-        return true, "микро-дрожание камеры", scores
-    end
-    if absence >= 1.0 then
-        return true, "нет значимых действий", scores
-    end
-
-    return false, "", scores
-end
-
 local function AFK_UpdateFSM()
     local p = LocalPlayer()
     if not IsValid(p) then return end
 
     local ct = CurTime()
+    local ang = p:EyeAngles()
+    local isActing = false
 
-    AFK_RecordSample(p, ct)
+    if p:KeyDown(IN_FORWARD) or p:KeyDown(IN_BACK) or p:KeyDown(IN_MOVELEFT) or p:KeyDown(IN_MOVERIGHT) or
+       p:KeyDown(IN_JUMP) or p:KeyDown(IN_DUCK) or p:KeyDown(IN_ATTACK) or p:KeyDown(IN_ATTACK2) or
+       p:KeyDown(IN_USE) or p:KeyDown(IN_RELOAD) then
+        isActing = true
+    end
 
-    local pos = p:GetPos()
-    local ang = GetTrackedEyeAngles(p)
-    local vel = p:GetVelocity()
-
-    local moved, turned, fast = false, false, false
-    local firstTick = AFKStats.lastPos == nil
-    if AFKStats.lastPos then moved = AFKStats.lastPos:DistToSqr(pos) > AFKStats.MOVE_EPS_SQ end
-    if AFKStats.lastAng then turned = AngleDeltaAbs(ang, AFKStats.lastAng) > AFKStats.ANG_EPS end
-    if vel then fast = vel:LengthSqr() > AFKStats.VEL_EPS_SQ end
-    AFKStats.lastPos, AFKStats.lastAng = pos, ang
-
-    local hasPhysicalActivity = firstTick or moved or turned or fast
-
-    local isBehaviorAFK, reason, scores = AFK_AnalyzeBehavior(ct)
-    AFKStats.lastCheckScores = scores
-
-    local isActing = hasPhysicalActivity and (not isBehaviorAFK)
+    if AFKStats.lastAng then
+        local dp = math.abs(math.AngleDifference(ang.p, AFKStats.lastAng.p))
+        local dy = math.abs(math.AngleDifference(ang.y, AFKStats.lastAng.y))
+        
+        if p:KeyDown(IN_LEFT) or p:KeyDown(IN_RIGHT) then dy = 0 end
+        
+        if dp > 0.5 or dy > 0.5 then isActing = true end
+    end
+    AFKStats.lastAng = ang
 
     if isActing then
         if AFKStats.state == "AFK" then
             local delta = ct - math.max(AFKStats.afkSince, AFKStats.lastFlushTime)
             if delta > 0 then AFKStats.pendingSeconds = AFKStats.pendingSeconds + delta end
             AFK_FlushPending()
-
-            local duration = ct - AFKStats.afkSince
-            notification.AddLegacy("AdminTool: Вы вышли из AFK (было " .. AFK_FormatHuman(duration) .. ")", 0, 4)
-            surface.PlaySound("buttons/button14.wav")
             AFKStats.wmFlashTime = ct + 1.5
         end
         AFKStats.state = "ACTIVE"
-        AFKStats.idleSince = 0
+        AFKStats.idleSince = ct
         AFKStats.afkSince = 0
         AFKStats.afkReason = ""
         return
@@ -1229,23 +1115,15 @@ local function AFK_UpdateFSM()
     if AFKStats.state == "ACTIVE" then
         AFKStats.state = "IDLE"
         AFKStats.idleSince = ct
-        if isBehaviorAFK then AFKStats.afkReason = reason end
+        AFKStats.afkReason = "бездействие"
     elseif AFKStats.state == "IDLE" then
-        if isBehaviorAFK and reason ~= "" then AFKStats.afkReason = reason end
         if ct - AFKStats.idleSince >= AFKStats.AFK_THRESHOLD then
             AFKStats.state = "AFK"
             AFKStats.afkSince = ct
             AFKStats.lastFlushTime = ct
-            if AFKStats.afkReason == "" then AFKStats.afkReason = "бездействие" end
-            notification.AddLegacy(
-                "AdminTool: Вы перешли в AFK (" .. AFKStats.afkReason .. ")",
-                1, 4
-            )
-            surface.PlaySound("buttons/button17.wav")
             AFKStats.wmFlashTime = ct + 1.5
         end
     elseif AFKStats.state == "AFK" then
-        if isBehaviorAFK and reason ~= "" then AFKStats.afkReason = reason end
         if ct - AFKStats.lastFlushTime >= AFKStats.FLUSH_INTERVAL then
             AFKStats.pendingSeconds = AFKStats.pendingSeconds + (ct - AFKStats.lastFlushTime)
             AFKStats.lastFlushTime = ct
@@ -2396,7 +2274,7 @@ if AT.activeCatIndex == 2 then
         coreCard.Paint = function(_, w, h)
             if not AT.rndx then return end
 
-            AT.rndx.Draw(ATScale(14), 0, 0, w, h, Color(12, 14, 18, 240))
+            AT.rndx.Draw(ATScale(14), 0, 0, w, h, ColorAlpha(THEME.subBg, 240))
             AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
 
             SafeSimpleText("● LIVE / FOV-FRUSTUM CULLING", "AT.Bold.14", ATScale(18), ATScale(14), THEME.green, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
@@ -2414,7 +2292,6 @@ if AT.activeCatIndex == 2 then
             local fov = GetConVar("at_opt_ffc_fov"):GetFloat()
             local halfAng = math.rad(fov * 0.5)
             local steps = 18
-            local prevX, prevY = radarCX, radarCY
             for s = 0, steps do
                 local t = -halfAng + (halfAng * 2) * (s / steps)
                 local px = radarCX + math.sin(t) * radarR
@@ -2424,7 +2301,6 @@ if AT.activeCatIndex == 2 then
                     local midY = (radarCY + py) * 0.5
                     AT.rndx.DrawCircle(midX, midY, ATScale(2), ColorAlpha(THEME.green, 18))
                 end
-                prevX, prevY = px, py
             end
 
             for edgeSign = -1, 1, 2 do
@@ -2523,7 +2399,7 @@ if AT.activeCatIndex == 2 then
             local fpsCol = fps >= 90 and THEME.green or (fps >= 50 and THEME.gold or THEME.red)
             metricRow(metrY,                  "FPS (текущий)",      tostring(fps),                          fpsCol,    fps / 144,               fpsCol)
             metricRow(metrY + ATScale(46),    "Отсечено объектов",  tostring(OptCore.ffc_culled_ply + OptCore.ffc_culled_ent + OptCore.ffc_culled_prop), THEME.green,  math.min(1, (OptCore.ffc_culled_ply + OptCore.ffc_culled_ent + OptCore.ffc_culled_prop) / 40), THEME.green)
-            metricRow(metrY + ATScale(92),    "Замороженно игроков", tostring(OptCore.pms_frozen_count),     Color(120, 200, 255), math.min(1, OptCore.pms_frozen_count / 20), Color(120, 200, 255))
+            metricRow(metrY + ATScale(92),    "Заморожено игроков",  tostring(OptCore.pms_frozen_count),     Color(120, 200, 255), math.min(1, OptCore.pms_frozen_count / 20), Color(120, 200, 255))
             metricRow(metrY + ATScale(138),   "Погашено эффектов",  tostring(OptCore.dpr_reaped_total),     THEME.gold,  math.min(1, OptCore.dpr_reaped_total / 50), THEME.gold)
             metricRow(metrY + ATScale(184),   "Lua память (MB)",    string.format("%.1f", OptCore.smd_lua_memory / 1024), Color(200, 140, 255), math.min(1, OptCore.smd_lua_memory / 1024 / 128), Color(200, 140, 255))
         end
@@ -2585,7 +2461,7 @@ if AT.activeCatIndex == 2 then
                 local cv = GetConVar(mod.cvar)
                 local enabled = cv and cv:GetBool() or false
 
-                AT.rndx.Draw(ATScale(12), 0, 0, w, h, enabled and Color(18, 22, 28, 240) or Color(14, 14, 16, 230))
+                AT.rndx.Draw(ATScale(12), 0, 0, w, h, enabled and ColorAlpha(THEME.subBg, 240) or ColorAlpha(THEME.card2, 230))
                 AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, enabled and ColorAlpha(mod.accent, 110) or Color(255, 255, 255, 14), 1)
 
                 if enabled then
@@ -2614,8 +2490,6 @@ if AT.activeCatIndex == 2 then
                 local cv = GetConVar(mod.cvar)
                 if cv then RunConsoleCommand(mod.cvar, cv:GetBool() and "0" or "1") end
             end
-
-            grid:Add(card)
         end
 
         timer.Simple(0, function() if IsValid(grid) then grid:InvalidateLayout(true); grid:SizeToChildren(false, true) end end)
@@ -2767,15 +2641,15 @@ if AT.activeCatIndex == 2 then
         title:Dock(TOP); title:DockMargin(0, 0, 0, ATScale(6)); title:SizeToContents()
 
         local sub = scroll:Add("DLabel")
-        sub:SetText("Личная хроника вашего времени в режиме AFK (30+ секунд бездействия). Данные хранятся локально.")
+        sub:SetText("Личная хроника вашего времени в режиме AFK.")
         sub:SetFont("AT.Light.16"); sub:SetTextColor(THEME.textSub)
         sub:Dock(TOP); sub:DockMargin(0, 0, 0, ATScale(16)); sub:SizeToContents()
 
         local hero = CreateCard(scroll, ATScale(140), ATScale(16))
         hero.Paint = function(_, w, h)
             if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(16, 18, 22, 240))
-            AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, Color(255, 255, 255, 16), 1)
+            AT.rndx.Draw(ATScale(16), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
 
             AT.rndx.Draw(ATScale(16), 0, 0, ATScale(5), h, THEME.gold)
 
@@ -2806,7 +2680,7 @@ if AT.activeCatIndex == 2 then
             elseif AFKStats.state == "IDLE" then
                 stateCol = THEME.gold
                 local remain = math.max(0, AFKStats.AFK_THRESHOLD - (CurTime() - AFKStats.idleSince))
-                stateText = "IDLE • AFK через " .. math.ceil(remain) .. "с"
+                stateText = "AFK через " .. math.ceil(remain) .. "с"
                 subReason = AFKStats.afkReason ~= "" and ("Причина: " .. AFKStats.afkReason) or nil
             else
                 stateCol = THEME.green
@@ -2836,8 +2710,8 @@ if AT.activeCatIndex == 2 then
 
         chart.Paint = function(s, w, h)
             if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(14), 0, 0, w, h, Color(16, 18, 22, 240))
-            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, Color(255, 255, 255, 14), 1)
+            AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
 
             local data = AFK_GetLastNDays(7)
             local maxSec = 1
@@ -2898,20 +2772,21 @@ if AT.activeCatIndex == 2 then
         hmLabel:SetFont("AT.Bold.22"); hmLabel:SetTextColor(color_white)
         hmLabel:Dock(TOP); hmLabel:DockMargin(0, ATScale(6), 0, ATScale(8)); hmLabel:SizeToContents()
 
-        local heat = CreateCard(scroll, ATScale(150), ATScale(16))
+        local heat = CreateCard(scroll, ATScale(180), ATScale(16))
         heat.Paint = function(s, w, h)
             if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(14), 0, 0, w, h, Color(16, 18, 22, 240))
-            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, Color(255, 255, 255, 14), 1)
+            AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
 
             local data = AFK_GetLastNDays(30)
             local maxSec = 1
             for _, d in ipairs(data) do if d.seconds > maxSec then maxSec = d.seconds end end
 
             local cols, rows = 15, 2
-            local padX, padY = ATScale(20), ATScale(20)
-            local cellSz = math.min(math.floor((w - padX * 2 - (cols - 1) * ATScale(6)) / cols), ATScale(40))
+            local padX, padY = ATScale(20), ATScale(22)
             local cellGap = ATScale(6)
+            local availW = math.max(w - padX * 2, 1)
+            local cellSz = math.max(ATScale(10), math.min(math.floor((availW - (cols - 1) * cellGap) / cols), ATScale(40)))
             local gridW = cols * cellSz + (cols - 1) * cellGap
             local startX = (w - gridW) * 0.5
             local startY = padY
@@ -2944,14 +2819,16 @@ if AT.activeCatIndex == 2 then
             end
 
             local legX = startX
-            local legY = startY + rows * cellSz + (rows - 1) * cellGap + ATScale(14)
-            SafeSimpleText("меньше", "AT.Light.14", legX, legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-            for step = 0, 4 do
-                local t = step / 4
-                local c = t == 0 and Color(38, 38, 44) or Color(math.Round(80 + 175 * t), math.Round(100 - 60 * t), math.Round(220 - 180 * t))
-                AT.rndx.Draw(ATScale(4), legX + ATScale(50) + step * ATScale(16), legY, ATScale(12), ATScale(12), c)
+            local legY = startY + rows * cellSz + (rows - 1) * cellGap + ATScale(18)
+            if legY + ATScale(12) <= h - ATScale(4) then
+                SafeSimpleText("меньше", "AT.Light.14", legX, legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                for step = 0, 4 do
+                    local t = step / 4
+                    local c = t == 0 and Color(38, 38, 44) or Color(math.Round(80 + 175 * t), math.Round(100 - 60 * t), math.Round(220 - 180 * t))
+                    AT.rndx.Draw(ATScale(4), legX + ATScale(56) + step * ATScale(18), legY, ATScale(14), ATScale(14), c)
+                end
+                SafeSimpleText("больше", "AT.Light.14", legX + ATScale(160), legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             end
-            SafeSimpleText("больше", "AT.Light.14", legX + ATScale(140), legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
             if hoveredIdx > 0 then
                 local d = data[hoveredIdx]
@@ -2973,11 +2850,10 @@ if AT.activeCatIndex == 2 then
 
         local function makeSummary(parent, title, getSec, color)
             local card = parent:Add("DPanel")
-            card:Dock(LEFT); card:DockMargin(0, 0, ATScale(12), 0)
             card.Paint = function(_, w, h)
                 if not AT.rndx then return end
-                AT.rndx.Draw(ATScale(12), 0, 0, w, h, Color(18, 20, 24, 230))
-                AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, Color(255, 255, 255, 14), 1)
+                AT.rndx.Draw(ATScale(12), 0, 0, w, h, THEME.subBg)
+                AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, THEME.subBorder, 1)
                 AT.rndx.Draw(ATScale(12), 0, 0, ATScale(4), h, color)
 
                 SafeSimpleText(title, "AT.Bold.14", ATScale(18), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
@@ -2991,8 +2867,355 @@ if AT.activeCatIndex == 2 then
         local sMonth = makeSummary(summaryWrap, "ЗА МЕСЯЦ",   function() return AFK_GetTotals().month end, Color(120, 191, 255))
 
         summaryWrap.PerformLayout = function(_, w, h)
-            local cardW = math.floor((w - ATScale(24)) / 3)
-            sDay:SetWide(cardW); sWeek:SetWide(cardW); sMonth:SetWide(cardW)
+            local gap = ATScale(12)
+            local cardW = math.floor((w - gap * 2) / 3)
+            sDay:SetPos(0, 0); sDay:SetSize(cardW, h)
+            sWeek:SetPos(cardW + gap, 0); sWeek:SetSize(cardW, h)
+            sMonth:SetPos((cardW + gap) * 2, 0); sMonth:SetSize(w - (cardW + gap) * 2, h)
+        end
+
+        CreateSectionLabel(scroll, "База данных AFK")
+
+        local searchBox = scroll:Add("DPanel"); searchBox:Dock(TOP); searchBox:SetTall(ATScale(72)); searchBox:DockMargin(0, 0, 0, ATScale(16))
+        searchBox.Paint = function(_, w, h)
+            PaintSubPanel(0, 0, w, h, ATScale(14))
+            SafeSimpleText("Поиск по SteamID", "AT.Light.14", ATScale(16), ATScale(10), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        end
+
+        local searchEntry = searchBox:Add("DTextEntry")
+        searchEntry:SetFont("AT.Bold.18")
+        searchEntry:SetTextColor(color_white)
+        searchEntry:SetDrawBackground(false)
+        searchEntry:SetDrawBorder(false)
+        searchEntry:SetCursorColor(color_white)
+        searchEntry:SetHighlightColor(ColorAlpha(THEME.green, 70))
+        searchEntry:SetPlaceholderText("")
+        searchEntry.Paint = function(s, w, h)
+            s:DrawTextEntryText(color_white, THEME.green, color_white)
+            if string.Trim(s:GetValue() or "") == "" and not s:HasFocus() then
+                SafeSimpleText("STEAM_0:X:XXXXX...", "AT.Bold.18", 0, h * 0.5, Color(255, 255, 255, 110), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            end
+        end
+        searchEntry.OnEnter = function(s)
+            if IsValid(s._AT_SearchBtn) then s._AT_SearchBtn:DoClick() end
+        end
+
+        local searchRes = scroll:Add("DPanel"); searchRes:Dock(TOP); searchRes:SetTall(0); searchRes.Paint = nil
+
+        local function OpenPlayerStatsFrame(d, tot)
+            if IsValid(UI_Frames.PlayerStats) then UI_Frames.PlayerStats:Remove() end
+
+            local fw, fh = ATScale(720), ATScale(560)
+            local frame = vgui.Create("DFrame")
+            UI_Frames.PlayerStats = frame
+            frame:SetSize(fw, fh)
+            frame:Center()
+            frame:SetTitle("")
+            frame:ShowCloseButton(false)
+            frame:SetDraggable(true)
+            frame:SetDeleteOnClose(true)
+            frame:MakePopup()
+
+            frame.Paint = function(_, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(10, 10, 10, 240))
+                    AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
+                    AT.rndx.Draw(ATScale(16), 0, 0, w, ATScale(4), THEME.green)
+                else
+                    surface.SetDrawColor(Color(10, 10, 10, 240))
+                    surface.DrawRect(0, 0, w, h)
+                    surface.SetDrawColor(THEME.green)
+                    surface.DrawRect(0, 0, w, ATScale(4))
+                end
+            end
+
+            local closeBtn = frame:Add("DButton")
+            closeBtn:SetText("")
+            closeBtn:SetSize(ATScale(32), ATScale(32))
+            closeBtn:SetPos(fw - ATScale(42), ATScale(14))
+            closeBtn.Paint = function(s, w, h)
+                if s:IsHovered() then
+                    if AT.rndx then
+                        AT.rndx.Draw(ATScale(6), 0, 0, w, h, THEME.redHover)
+                    else
+                        surface.SetDrawColor(THEME.redHover); surface.DrawRect(0, 0, w, h)
+                    end
+                end
+                surface.SetDrawColor(s:IsHovered() and color_white or THEME.inactive)
+                surface.SetMaterial(Config.Mats.CLOSE)
+                surface.DrawTexturedRect(ATScale(6), ATScale(6), w - ATScale(12), h - ATScale(12))
+            end
+            closeBtn.DoClick = function() PlayClick(); frame:Remove() end
+
+            local titleLbl = frame:Add("DLabel")
+            titleLbl:SetText("Статистика игрока")
+            titleLbl:SetFont("AT.Bold.24")
+            titleLbl:SetTextColor(color_white)
+            titleLbl:SetPos(ATScale(24), ATScale(18))
+            titleLbl:SizeToContents()
+
+            local sep = frame:Add("DPanel")
+            sep:SetPos(ATScale(20), ATScale(58))
+            sep:SetSize(fw - ATScale(40), 1)
+            sep.Paint = function(_, w, h)
+                surface.SetDrawColor(THEME.subBorder)
+                surface.DrawRect(0, 0, w, h)
+            end
+
+            local headerCard = frame:Add("DPanel")
+            headerCard:SetPos(ATScale(20), ATScale(74))
+            headerCard:SetSize(fw - ATScale(40), ATScale(86))
+            headerCard.Paint = function(_, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
+                    AT.rndx.Draw(ATScale(14), 0, 0, ATScale(4), h, THEME.green)
+                else
+                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
+                    surface.SetDrawColor(THEME.green); surface.DrawRect(0, 0, ATScale(4), h)
+                end
+
+                SafeSimpleText(d.nick or "Неизвестно", "AT.Bold.26", ATScale(20), ATScale(14), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                SafeSimpleText(d.steamid or "", "AT.Light.16", ATScale(20), ATScale(50), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+                local updTxt = "Обновлено: " .. (d.updated_at and os.date("%d.%m.%Y %H:%M", math.floor((d.updated_at or 0) / 1000)) or "—")
+                SafeSimpleText(updTxt, "AT.Light.14", w - ATScale(20), ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+
+                local totalDays = 0
+                if d.days then for _ in pairs(d.days) do totalDays = totalDays + 1 end end
+                SafeSimpleText("Дней в базе: " .. totalDays, "AT.Light.14", w - ATScale(20), ATScale(40), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+            end
+
+            local statsWrap = frame:Add("DPanel")
+            statsWrap:SetPos(ATScale(20), ATScale(172))
+            statsWrap:SetSize(fw - ATScale(40), ATScale(100))
+            statsWrap.Paint = nil
+
+            local statCards = {
+                { label = "СЕГОДНЯ",      getSec = function() return tot.today end,   color = THEME.gold },
+                { label = "ЗА НЕДЕЛЮ",    getSec = function() return tot.week end,    color = THEME.green },
+                { label = "ЗА МЕСЯЦ",     getSec = function() return tot.month end,   color = Color(120, 191, 255) },
+                { label = "ЗА ВСЁ ВРЕМЯ", getSec = function() return tot.allTime end, color = Color(200, 140, 255) },
+            }
+
+            statsWrap.PerformLayout = function(_, w, h)
+                local gap = ATScale(10)
+                local cardW = math.floor((w - gap * 3) / 4)
+                for i, child in ipairs(statsWrap:GetChildren()) do
+                    child:SetPos((i - 1) * (cardW + gap), 0)
+                    child:SetSize(i == 4 and (w - (cardW + gap) * 3) or cardW, h)
+                end
+            end
+
+            for _, sc in ipairs(statCards) do
+                local sCard = statsWrap:Add("DPanel")
+                sCard.Paint = function(_, w, h)
+                    if AT.rndx then
+                        AT.rndx.Draw(ATScale(12), 0, 0, w, h, THEME.subBg)
+                        AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, ColorAlpha(sc.color, 60), 1)
+                        AT.rndx.Draw(ATScale(12), 0, 0, w, ATScale(3), sc.color)
+                    else
+                        surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
+                        surface.SetDrawColor(sc.color); surface.DrawRect(0, 0, w, ATScale(3))
+                    end
+                    SafeSimpleText(sc.label, "AT.Bold.14", w * 0.5, ATScale(16), sc.color, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                    SafeSimpleText(AFK_FormatHuman(sc.getSec()), "AT.Bold.24", w * 0.5, h * 0.5 + ATScale(10), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                end
+            end
+
+            local chartLabel = frame:Add("DLabel")
+            chartLabel:SetText("Последние 7 дней")
+            chartLabel:SetFont("AT.Bold.20")
+            chartLabel:SetTextColor(color_white)
+            chartLabel:SetPos(ATScale(24), ATScale(286))
+            chartLabel:SizeToContents()
+
+            local chartCard = frame:Add("DPanel")
+            chartCard:SetPos(ATScale(20), ATScale(316))
+            chartCard:SetSize(fw - ATScale(40), fh - ATScale(336))
+            chartCard.hoveredBar = -1
+            chartCard.Paint = function(s, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
+                else
+                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
+                end
+
+                local chartData = AFK_GetExternalLastNDays(d.days, 7)
+                local maxSec = 1
+                for _, cd in ipairs(chartData) do if cd.seconds > maxSec then maxSec = cd.seconds end end
+
+                local padX, padTop, padBottom = ATScale(24), ATScale(20), ATScale(44)
+                local cW = math.max(w - padX * 2, 1)
+                local cH = math.max(h - padTop - padBottom, 1)
+                local barCount = #chartData
+                if barCount <= 0 then return end
+                local gap = ATScale(10)
+                local barW = math.max(1, (cW - gap * (barCount - 1)) / barCount)
+
+                if AT.rndx then
+                    for gi = 0, 3 do AT.rndx.Draw(256, padX, padTop + cH * (gi / 3), cW, 1, Color(255, 255, 255, 10)) end
+                end
+
+                local mx, my = s:LocalCursorPos()
+                s.hoveredBar = -1
+                for i, cd in ipairs(chartData) do
+                    local bx = padX + (i - 1) * (barW + gap)
+                    local frac = cd.seconds / maxSec
+                    local bh = math.max(ATScale(2), cH * frac)
+                    local by = padTop + cH - bh
+
+                    local col
+                    if cd.isToday then col = THEME.gold
+                    elseif cd.seconds == 0 then col = Color(60, 60, 70)
+                    else
+                        local t = math.Clamp(cd.seconds / 14400, 0, 1)
+                        col = Color(math.Round(80 + 175 * t), math.Round(220 - 170 * t), math.Round(120 - 80 * t))
+                    end
+
+                    if mx >= bx and mx <= bx + barW and my >= padTop and my <= padTop + cH then
+                        s.hoveredBar = i
+                        col = Color(math.Clamp(col.r + 40, 0, 255), math.Clamp(col.g + 40, 0, 255), math.Clamp(col.b + 40, 0, 255))
+                    end
+
+                    if AT.rndx then
+                        AT.rndx.Draw(ATScale(5), bx, by, barW, bh, col)
+                    else
+                        surface.SetDrawColor(col); surface.DrawRect(bx, by, barW, bh)
+                    end
+
+                    if cd.seconds > 0 then
+                        SafeSimpleText(AFK_FormatHuman(cd.seconds), "AT.Light.13", bx + barW * 0.5, by - ATScale(4), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM)
+                    end
+                    local lc = cd.isToday and THEME.gold or color_white
+                    SafeSimpleText(cd.label, "AT.Bold.14", bx + barW * 0.5, padTop + cH + ATScale(8), lc, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                    SafeSimpleText(cd.shortDate, "AT.Light.12", bx + barW * 0.5, padTop + cH + ATScale(26), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                end
+            end
+        end
+
+        local function OpenErrorFrame(steamid)
+            if IsValid(UI_Frames.PlayerStatsError) then UI_Frames.PlayerStatsError:Remove() end
+
+            local fw, fh = ATScale(520), ATScale(240)
+            local frame = vgui.Create("DFrame")
+            UI_Frames.PlayerStatsError = frame
+            frame:SetSize(fw, fh)
+            frame:Center()
+            frame:SetTitle("")
+            frame:ShowCloseButton(false)
+            frame:SetDraggable(true)
+            frame:SetDeleteOnClose(true)
+            frame:MakePopup()
+
+            frame.Paint = function(_, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(10, 10, 10, 240))
+                    AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
+                    AT.rndx.Draw(ATScale(16), 0, 0, w, ATScale(4), THEME.red)
+                else
+                    surface.SetDrawColor(Color(10, 10, 10, 240)); surface.DrawRect(0, 0, w, h)
+                    surface.SetDrawColor(THEME.red); surface.DrawRect(0, 0, w, ATScale(4))
+                end
+            end
+
+            local closeBtn = frame:Add("DButton")
+            closeBtn:SetText("")
+            closeBtn:SetSize(ATScale(32), ATScale(32))
+            closeBtn:SetPos(fw - ATScale(42), ATScale(14))
+            closeBtn.Paint = function(s, w, h)
+                if s:IsHovered() then
+                    if AT.rndx then AT.rndx.Draw(ATScale(6), 0, 0, w, h, THEME.redHover)
+                    else surface.SetDrawColor(THEME.redHover); surface.DrawRect(0, 0, w, h) end
+                end
+                surface.SetDrawColor(s:IsHovered() and color_white or THEME.inactive)
+                surface.SetMaterial(Config.Mats.CLOSE)
+                surface.DrawTexturedRect(ATScale(6), ATScale(6), w - ATScale(12), h - ATScale(12))
+            end
+            closeBtn.DoClick = function() PlayClick(); frame:Remove() end
+
+            local titleLbl = frame:Add("DLabel")
+            titleLbl:SetText("Ошибка поиска")
+            titleLbl:SetFont("AT.Bold.22")
+            titleLbl:SetTextColor(color_white)
+            titleLbl:SetPos(ATScale(24), ATScale(20))
+            titleLbl:SizeToContents()
+
+            local sep = frame:Add("DPanel")
+            sep:SetPos(ATScale(20), ATScale(58))
+            sep:SetSize(fw - ATScale(40), 1)
+            sep.Paint = function(_, w, h)
+                surface.SetDrawColor(THEME.subBorder); surface.DrawRect(0, 0, w, h)
+            end
+
+            local errCard = frame:Add("DPanel")
+            errCard:SetPos(ATScale(20), ATScale(74))
+            errCard:SetSize(fw - ATScale(40), fh - ATScale(94))
+            errCard.Paint = function(_, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, ColorAlpha(THEME.red, 60), 1)
+                    AT.rndx.Draw(ATScale(14), 0, 0, ATScale(4), h, THEME.red)
+                else
+                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
+                    surface.SetDrawColor(THEME.red); surface.DrawRect(0, 0, ATScale(4), h)
+                end
+
+                SafeSimpleText("SteamID не найден", "AT.Bold.24", w * 0.5, ATScale(24), THEME.red, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                SafeSimpleText((steamid ~= nil and steamid ~= "") and steamid or "—", "AT.Bold.18", w * 0.5, ATScale(60), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                SafeSimpleText("Данный SteamID отсутствует в базе данных.", "AT.Light.16", w * 0.5, ATScale(94), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                SafeSimpleText("Проверьте правильность ввода и попробуйте снова.", "AT.Light.14", w * 0.5, ATScale(118), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+            end
+        end
+
+        local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
+            local q = string.Trim(searchEntry:GetValue() or "")
+            if q == "" then return end
+
+            local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
+
+            if not targetSid then
+                OpenErrorFrame(q)
+                return
+            end
+
+            searchRes:Clear(); searchRes:SetTall(ATScale(60))
+            local load = CreateCard(searchRes, ATScale(60), 0)
+            load.Paint = function(_, w, h)
+                PaintSubPanel(0, 0, w, h, ATScale(14))
+                SafeSimpleText("Загрузка данных для " .. targetSid .. "...", "AT.Bold.18", ATScale(16), h * 0.5, THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            end
+
+            http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. targetSid, function(body)
+                if IsValid(searchRes) then searchRes:Clear(); searchRes:SetTall(0) end
+                local data = util.JSONToTable(body or "")
+                if not data or not data.ok or not data.data then
+                    OpenErrorFrame(targetSid)
+                    return
+                end
+
+                local dd = data.data
+                local tot = AFK_GetExternalTotals(dd.days)
+                OpenPlayerStatsFrame(dd, tot)
+            end, function()
+                if not IsValid(searchRes) then return end
+                searchRes:Clear(); searchRes:SetTall(ATScale(60))
+                local err = CreateCard(searchRes, ATScale(60), 0)
+                err.Paint = function(_, w, h)
+                    PaintSubPanel(0, 0, w, h, ATScale(14))
+                    SafeSimpleText("Ошибка подключения к API.", "AT.Bold.18", ATScale(16), h * 0.5, THEME.red, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                end
+            end)
+        end)
+        searchBtn:SetSize(ATScale(100), ATScale(46))
+        searchEntry._AT_SearchBtn = searchBtn
+
+        searchBox.PerformLayout = function(_, w, h)
+            local btnW, btnH = searchBtn:GetWide(), searchBtn:GetTall()
+            searchBtn:SetPos(w - btnW - ATScale(10), h * 0.5 - btnH * 0.5)
+            searchEntry:SetPos(ATScale(16), ATScale(32))
+            searchEntry:SetSize(w - btnW - ATScale(32), h - ATScale(40))
         end
 
     elseif AT.activeCatIndex == 7 then
@@ -3115,12 +3338,27 @@ end)
 
 hook.Add("OnReloaded", "AdminTool.AFKChronicleSave2", function() AFK_FlushPending() end)
 
-hook.Add("InitPostEntity", "AdminTool.AFKChronicleInit", function()
-    timer.Simple(2, function()
-        AFK_LoadDB()
-        AFKStats.lastFlushTime = CurTime()
+local function AFK_StartInit()
+    AFKStats.dbPath        = nil
+    AFKStats.dbLoaded      = false
+    AFKStats.dbCache       = nil
+    AFKStats.lastFlushTime = CurTime()
+
+    local TIMER_ID = "AdminTool.AFKChronicleLoad"
+    timer.Create(TIMER_ID, 1, 0, function()
+        if AFK_LoadDB() then
+            AFKStats.lastFlushTime = CurTime()
+            timer.Remove(TIMER_ID)
+        end
     end)
-end)
+    if AFK_LoadDB() then
+        AFKStats.lastFlushTime = CurTime()
+        timer.Remove(TIMER_ID)
+    end
+end
+
+hook.Add("InitPostEntity", "AdminTool.AFKChronicleInit", AFK_StartInit)
+AFK_StartInit()
 
 hook.Add("InitPostEntity", "AdminTool.PropLogsReadyDelay", function() AT.PROP_LOG_READY_TIME = CurTime() + 5 end)
 hook.Add("OnEntityCreated", "AdminTool.PropLogger", function(ent) if IsValid(ent) then QueuePropLog(ent) end end)
@@ -3147,8 +3385,7 @@ hook.Add("PrePlayerDraw", "AdminTool_Opt_FFC_Player", function(ply)
         local camPos = GetCameraPos()
         local delta = ply:GetPos() - camPos
         local len2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z
-        if len2 < 160000 then return end
-        if len2 < 1 then return end
+        if len2 < 1 or len2 < 160000 then return end
         local invLen = 1 / math.sqrt(len2)
         delta.x = delta.x * invLen; delta.y = delta.y * invLen; delta.z = delta.z * invLen
 
