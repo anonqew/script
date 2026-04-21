@@ -83,9 +83,9 @@ local AFKStats = {
     afkSince           = 0,
     lastAng            = nil,
 
-    AFK_THRESHOLD      = 30,
-    FLUSH_INTERVAL     = 300, -- 5 минут
-    MIN_SAVE_SECONDS   = 60,  -- Минимальный порог для отправки в API
+    AFK_THRESHOLD      = 300,
+    FLUSH_INTERVAL     = 300,
+    MIN_SAVE_SECONDS   = 60,
 
     pendingSeconds     = 0,
     lastFlushTime      = 0,
