@@ -84,7 +84,8 @@ local AFKStats = {
     lastAng            = nil,
 
     AFK_THRESHOLD      = 30,
-    FLUSH_INTERVAL     = 10,
+    FLUSH_INTERVAL     = 300, -- 5 минут
+    MIN_SAVE_SECONDS   = 60,  -- Минимальный порог для отправки в API
 
     pendingSeconds     = 0,
     lastFlushTime      = 0,
@@ -909,8 +910,11 @@ local function AFK_LoadDB(callback)
     )
 end
 
-local function AFK_FlushPending()
+local function AFK_FlushPending(force)
     if AFKStats.pendingSeconds <= 0 or not AFKStats.dbLoaded then return end
+
+    if not force and AFKStats.pendingSeconds < AFKStats.MIN_SAVE_SECONDS then return end
+
     local db = AFKStats.dbCache
     local today = tostring(AFK_GetDayKey(os.time()))
     db.days[today] = (db.days[today] or 0) + AFKStats.pendingSeconds
@@ -1091,9 +1095,7 @@ local function AFK_UpdateFSM()
     if AFKStats.lastAng then
         local dp = math.abs(math.AngleDifference(ang.p, AFKStats.lastAng.p))
         local dy = math.abs(math.AngleDifference(ang.y, AFKStats.lastAng.y))
-        
         if p:KeyDown(IN_LEFT) or p:KeyDown(IN_RIGHT) then dy = 0 end
-        
         if dp > 0.5 or dy > 0.5 then isActing = true end
     end
     AFKStats.lastAng = ang
@@ -1102,7 +1104,7 @@ local function AFK_UpdateFSM()
         if AFKStats.state == "AFK" then
             local delta = ct - math.max(AFKStats.afkSince, AFKStats.lastFlushTime)
             if delta > 0 then AFKStats.pendingSeconds = AFKStats.pendingSeconds + delta end
-            AFK_FlushPending()
+            AFK_FlushPending(true)
             AFKStats.wmFlashTime = ct + 1.5
         end
         AFKStats.state = "ACTIVE"
@@ -1127,7 +1129,7 @@ local function AFK_UpdateFSM()
         if ct - AFKStats.lastFlushTime >= AFKStats.FLUSH_INTERVAL then
             AFKStats.pendingSeconds = AFKStats.pendingSeconds + (ct - AFKStats.lastFlushTime)
             AFKStats.lastFlushTime = ct
-            AFK_FlushPending()
+            AFK_FlushPending(false)
         end
     end
 end
@@ -3169,9 +3171,15 @@ if AT.activeCatIndex == 2 then
             end
         end
 
+        local searchCooldown = 0
         local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
+            local ct = CurTime()
+            if ct < searchCooldown then return end
+            
             local q = string.Trim(searchEntry:GetValue() or "")
             if q == "" then return end
+
+            searchCooldown = ct + 3
 
             local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
 
@@ -3333,10 +3341,10 @@ hook.Add("ShutDown", "AdminTool.AFKChronicleSave", function()
         local delta = ct - math.max(AFKStats.afkSince, AFKStats.lastFlushTime)
         if delta > 0 then AFKStats.pendingSeconds = AFKStats.pendingSeconds + delta end
     end
-    AFK_FlushPending()
+    AFK_FlushPending(true)
 end)
 
-hook.Add("OnReloaded", "AdminTool.AFKChronicleSave2", function() AFK_FlushPending() end)
+hook.Add("OnReloaded", "AdminTool.AFKChronicleSave2", function() AFK_FlushPending(true) end)
 
 local function AFK_StartInit()
     AFKStats.dbPath        = nil
