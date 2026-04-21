@@ -3217,7 +3217,7 @@ if AT.activeCatIndex == 2 then
             local q = string.Trim(searchEntry:GetValue() or "")
             if q == "" then return end
 
-            searchCooldown = ct + 3
+            searchCooldown = ct + 15
 
             local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
 
