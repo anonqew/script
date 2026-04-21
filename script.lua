@@ -3171,7 +3171,7 @@ if AT.activeCatIndex == 2 then
             end
         end
 
-        local searchCooldown = 0
+        local searchCooldown = 15
         local activeNotify = nil
 
         local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
