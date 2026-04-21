@@ -3171,30 +3171,25 @@ if AT.activeCatIndex == 2 then
             end
         end
 
-        _G.AT_SearchStorage = _G.AT_SearchStorage or {
-            cooldown = 0,
-            notify = nil
-        }
+        AT.searchCooldown = AT.searchCooldown or 0
 
         local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
             local ct = CurTime()
-            
-            if ct < _G.AT_SearchStorage.cooldown then
+            if ct < AT.searchCooldown then
                 surface.PlaySound("buttons/button10.wav")
                 
-                if IsValid(_G.AT_SearchStorage.notify) then _G.AT_AFK_SEARCH_STATE.notify:Remove() end
+                if IsValid(AT.activeNotify) then AT.activeNotify:Remove() end
                 
-                local remain = math.ceil(_G.AT_SearchStorage.cooldown - ct)
+                local remain = math.ceil(AT.searchCooldown - ct)
                 local nw, nh = ATScale(340), ATScale(46)
                 
-                _G.AT_SearchStorage.notify = vgui.Create("DPanel")
-                local notify = _G.AT_SearchStorage.notify
-                notify:SetSize(nw, nh)
-                notify:SetPos(ScrW() * 0.5 - nw * 0.5, -nh)
-                notify:SetDrawOnTop(true)
+                AT.activeNotify = vgui.Create("DPanel")
+                AT.activeNotify:SetSize(nw, nh)
+                AT.activeNotify:SetPos(ScrW() * 0.5 - nw * 0.5, -nh)
+                AT.activeNotify:SetDrawOnTop(true)
                 
                 local st = SysTime()
-                notify.Paint = function(s, w, h)
+                AT.activeNotify.Paint = function(s, w, h)
                     local life = SysTime() - st
                     if life > 2 then s:SetAlpha(math.max(0, 255 - (life - 2) * 1000)) end
                     
@@ -3206,11 +3201,11 @@ if AT.activeCatIndex == 2 then
                     SafeSimpleText("Подождите " .. remain .. " сек. перед следующим поиском", "AT.Bold.16", w * 0.5, h * 0.5, THEME.red, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
                 
-                notify:MoveTo(ScrW() * 0.5 - nw * 0.5, ATScale(20), 0.25, 0, -1)
+                AT.activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, ATScale(20), 0.25, 0, -1)
                 timer.Simple(2.5, function()
-                    if IsValid(notify) then 
-                        notify:MoveTo(ScrW() * 0.5 - nw * 0.5, -nh, 0.25, 0, -1, function()
-                            if IsValid(notify) then notify:Remove() end
+                    if IsValid(AT.activeNotify) then 
+                        AT.activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, -nh, 0.25, 0, -1, function()
+                            if IsValid(AT.activeNotify) then AT.activeNotify:Remove() end
                         end)
                     end
                 end)
@@ -3221,45 +3216,40 @@ if AT.activeCatIndex == 2 then
             local q = string.Trim(searchEntry:GetValue() or "")
             if q == "" then return end
 
-            _G.AT_SearchStorage.cooldown = ct + 15
+            AT.searchCooldown = ct + 15
 
             local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
 
             if not targetSid then
-                local ql = string.lower(q)
-                for _, p in ipairs(player.GetAll()) do
-                    if string.find(string.lower(p:Nick()), ql, 1, true) then targetSid = p:SteamID(); break end
-                end
-            end
-
-            if not targetSid then
-                searchRes:Clear(); searchRes:SetTall(ATScale(60)); local err = CreateCard(searchRes, ATScale(60), 0)
-                err.Paint = function(_, w, h) PaintSubPanel(0, 0, w, h, ATScale(14)); SafeSimpleText("Игрок не найден.", "AT.Bold.18", ATScale(16), h * 0.5, THEME.red, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER) end
+                OpenErrorFrame(q)
                 return
             end
 
             searchRes:Clear(); searchRes:SetTall(ATScale(60))
             local load = CreateCard(searchRes, ATScale(60), 0)
-            load.Paint = function(_, w, h) PaintSubPanel(0, 0, w, h, ATScale(14)); SafeSimpleText("Загрузка данных для " .. targetSid .. "...", "AT.Bold.18", ATScale(16), h * 0.5, THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER) end
+            load.Paint = function(_, w, h)
+                PaintSubPanel(0, 0, w, h, ATScale(14))
+                SafeSimpleText("Загрузка данных для " .. targetSid .. "...", "AT.Bold.18", ATScale(16), h * 0.5, THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            end
 
-            http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. targetSid, function(body) --
-                if not IsValid(searchRes) then return end
-                searchRes:Clear()
+            http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. targetSid, function(body)
+                if IsValid(searchRes) then searchRes:Clear(); searchRes:SetTall(0) end
                 local data = util.JSONToTable(body or "")
                 if not data or not data.ok or not data.data then
-                    searchRes:SetTall(ATScale(60)); local err = CreateCard(searchRes, ATScale(60), 0)
-                    err.Paint = function(_, w, h) PaintSubPanel(0, 0, w, h, ATScale(14)); SafeSimpleText("Статистика не найдена.", "AT.Bold.18", ATScale(16), h * 0.5, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER) end
+                    OpenErrorFrame(targetSid)
                     return
                 end
 
-                local d = data.data
-                local tot = AFK_GetExternalTotals(d.days)
-                searchRes:SetTall(ATScale(120)); local c = CreateCard(searchRes, ATScale(120), 0)
-                c.Paint = function(_, w, h)
+                local dd = data.data
+                local tot = AFK_GetExternalTotals(dd.days)
+                OpenPlayerStatsFrame(dd, tot)
+            end, function()
+                if not IsValid(searchRes) then return end
+                searchRes:Clear(); searchRes:SetTall(ATScale(60))
+                local err = CreateCard(searchRes, ATScale(60), 0)
+                err.Paint = function(_, w, h)
                     PaintSubPanel(0, 0, w, h, ATScale(14))
-                    SafeSimpleText(d.nick .. " (" .. d.steamid .. ")", "AT.Bold.22", ATScale(16), ATScale(16), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-                    if AT.rndx then AT.rndx.Draw(256, ATScale(16), ATScale(46), w - ATScale(32), 1, Color(255, 255, 255, 10)) end
-                    SafeSimpleText("Всего: " .. AFK_FormatHuman(tot.allTime), "AT.Bold.18", ATScale(16), ATScale(60), THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                    SafeSimpleText("Ошибка подключения к API.", "AT.Bold.18", ATScale(16), h * 0.5, THEME.red, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 end
             end)
         end)
