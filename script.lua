@@ -3171,25 +3171,26 @@ if AT.activeCatIndex == 2 then
             end
         end
 
-        AT.searchCooldown = AT.searchCooldown or 0
+        local searchCooldown = 0
+        local activeNotify = nil
 
         local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
             local ct = CurTime()
-            if ct < AT.searchCooldown then
+            if ct < searchCooldown then
                 surface.PlaySound("buttons/button10.wav")
                 
-                if IsValid(AT.activeNotify) then AT.activeNotify:Remove() end
+                if IsValid(activeNotify) then activeNotify:Remove() end
                 
-                local remain = math.ceil(AT.searchCooldown - ct)
+                local remain = math.ceil(searchCooldown - ct)
                 local nw, nh = ATScale(340), ATScale(46)
                 
-                AT.activeNotify = vgui.Create("DPanel")
-                AT.activeNotify:SetSize(nw, nh)
-                AT.activeNotify:SetPos(ScrW() * 0.5 - nw * 0.5, -nh)
-                AT.activeNotify:SetDrawOnTop(true)
+                activeNotify = vgui.Create("DPanel")
+                activeNotify:SetSize(nw, nh)
+                activeNotify:SetPos(ScrW() * 0.5 - nw * 0.5, -nh)
+                activeNotify:SetDrawOnTop(true)
                 
                 local st = SysTime()
-                AT.activeNotify.Paint = function(s, w, h)
+                activeNotify.Paint = function(s, w, h)
                     local life = SysTime() - st
                     if life > 2 then s:SetAlpha(math.max(0, 255 - (life - 2) * 1000)) end
                     
@@ -3201,11 +3202,11 @@ if AT.activeCatIndex == 2 then
                     SafeSimpleText("Подождите " .. remain .. " сек. перед следующим поиском", "AT.Bold.16", w * 0.5, h * 0.5, THEME.red, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
                 
-                AT.activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, ATScale(20), 0.25, 0, -1)
+                activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, ATScale(20), 0.25, 0, -1)
                 timer.Simple(2.5, function()
-                    if IsValid(AT.activeNotify) then 
-                        AT.activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, -nh, 0.25, 0, -1, function()
-                            if IsValid(AT.activeNotify) then AT.activeNotify:Remove() end
+                    if IsValid(activeNotify) then 
+                        activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, -nh, 0.25, 0, -1, function()
+                            if IsValid(activeNotify) then activeNotify:Remove() end
                         end)
                     end
                 end)
@@ -3216,7 +3217,7 @@ if AT.activeCatIndex == 2 then
             local q = string.Trim(searchEntry:GetValue() or "")
             if q == "" then return end
 
-            AT.searchCooldown = ct + 15
+            searchCooldown = ct + 15
 
             local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
 
