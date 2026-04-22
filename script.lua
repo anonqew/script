@@ -4075,6 +4075,7 @@ end
 local tgAlpha = 0
 local curAlpha = 0
 local cEnt = NULL
+local cOwner = NULL
 local cText = ""
 local cW, cH = 0, 0
 
@@ -4088,10 +4089,15 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     if IsValid(ent) and ent:GetClass() == "prop_physics" and tr.HitPos:DistToSqr(p:EyePos()) < 100000 then
         tgAlpha = 1
         
-        if ent ~= cEnt then
+        local currentOwner = NULL
+        if ent.CPPIGetOwner then currentOwner = ent:CPPIGetOwner() end
+        if not IsValid(currentOwner) then currentOwner = ent:GetNWEntity("Owner") end
+        
+        if ent ~= cEnt or currentOwner ~= cOwner then
             cEnt = ent
-            local owner = ent.CPPIGetOwner and ent:CPPIGetOwner() or NULL
-            cText = (IsValid(owner) and owner:IsPlayer()) and ("Владелец: " .. owner:Nick()) or "Владелец: Мир"
+            cOwner = currentOwner
+            
+            cText = (IsValid(cOwner) and cOwner:IsPlayer()) and ("Владелец: " .. cOwner:Nick()) or "Владелец: Мир"
             
             surface.SetFont("AT.Bold.16")
             cW = surface.GetTextSize(cText) + ATScale(24)
@@ -4100,6 +4106,7 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     else
         tgAlpha = 0
         cEnt = NULL
+        cOwner = NULL
     end
 end)
 
