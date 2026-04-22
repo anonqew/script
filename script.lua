@@ -4030,9 +4030,16 @@ btn.DoClick = function()
     end
 end
 
-pnl.Think = function()
+local trackedHUD = {}
+local nextHUDCheck = 0
+local targetY = ScrH() * 0.5 - ATScale(70)
+
+pnl.Think = function(s)
     local p = LocalPlayer()
     if not IsValid(p) then return end
+    
+    local cT = curT()
+    local fT = frameT()
     
     local cJ = p:Team()
     local ug = string.lower(p:GetUserGroup() or "")
@@ -4050,6 +4057,55 @@ pnl.Think = function()
         end
     end
     lastJ = cJ
+
+    if cT > nextHUDCheck then
+        nextHUDCheck = cT + 1
+        local idx = 1
+        local wChildren = vgui.GetWorldPanel():GetChildren()
+        for i = 1, #wChildren do
+            local p1 = wChildren[i]
+            if IsValid(p1) then
+                local c1 = p1.ClassName
+                if isstring(c1) and string.StartWith(c1, "hud.") then
+                    trackedHUD[idx] = p1; idx = idx + 1
+                end
+                local cChildren = p1:GetChildren()
+                for j = 1, #cChildren do
+                    local p2 = cChildren[j]
+                    if IsValid(p2) then
+                        local c2 = p2.ClassName
+                        if isstring(c2) and string.StartWith(c2, "hud.") then
+                            trackedHUD[idx] = p2; idx = idx + 1
+                        end
+                    end
+                end
+            end
+        end
+        for i = idx, #trackedHUD do trackedHUD[i] = nil end
+    end
+    
+    local maxBottom = 0
+    local limitX = ATScale(200)
+    local screenH = ScrH()
+    
+    for i = 1, #trackedHUD do
+        local child = trackedHUD[i]
+        if IsValid(child) and child:IsVisible() and child:GetTall() < screenH * 0.8 then
+            local cx, cy = child:LocalToScreen(0, 0)
+            if cx > -1000 and cx < limitX then
+                local bottom = cy + child:GetTall()
+                if bottom > maxBottom then maxBottom = bottom end
+            end
+        end
+    end
+    
+    local defY = screenH * 0.5 - ATScale(70)
+    targetY = maxBottom > 0 and (maxBottom + ATScale(16)) or defY
+    
+    local curX, curY = s:GetPos()
+    if math.abs(curY - targetY) > 0.5 then
+        s:SetPos(curX, math_lerp(fT * 10, curY, targetY))
+    end
 end
 
 pnl.Paint = function(s, w, h)
