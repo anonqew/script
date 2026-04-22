@@ -4030,30 +4030,9 @@ btn.DoClick = function()
     end
 end
 
-local trackedHUD = {}
-local nextHUDCheck = 0
-
-local function ScanForHUD(parent)
-    local children = parent:GetChildren()
-    for i = 1, #children do
-        local child = children[i]
-        if IsValid(child) then
-            local cls = child.ClassName
-            if cls == "hud.task" or cls == "hud.case" then
-                trackedHUD[#trackedHUD + 1] = child
-            else
-                ScanForHUD(child)
-            end
-        end
-    end
-end
-
-pnl.Think = function(s)
+pnl.Think = function()
     local p = LocalPlayer()
     if not IsValid(p) then return end
-    
-    local cT = curT()
-    local fT = frameT()
     
     local cJ = p:Team()
     local ug = string.lower(p:GetUserGroup() or "")
@@ -4071,33 +4050,6 @@ pnl.Think = function(s)
         end
     end
     lastJ = cJ
-
-    if cT > nextHUDCheck then
-        nextHUDCheck = cT + 1
-        for i = 1, #trackedHUD do trackedHUD[i] = nil end
-        ScanForHUD(vgui.GetWorldPanel())
-    end
-    
-    local maxBottom = 0
-    for i = 1, #trackedHUD do
-        local child = trackedHUD[i]
-        if IsValid(child) and child:IsVisible() then
-            if type(child.ShouldDraw) == "function" and child:ShouldDraw(p) == false then goto skip end
-            
-            local _, cy = child:LocalToScreen(0, 0)
-            local bottom = cy + child:GetTall()
-            if bottom > maxBottom then maxBottom = bottom end
-            
-            ::skip::
-        end
-    end
-    
-    local targetY = maxBottom > 0 and (maxBottom + ATScale(16)) or (ScrH() * 0.5 - ATScale(70))
-    local curX, curY = s:GetPos()
-    
-    if math.abs(curY - targetY) > 0.5 then
-        s:SetPos(curX, math_lerp(fT * 10, curY, targetY))
-    end
 end
 
 pnl.Paint = function(s, w, h)
