@@ -4075,9 +4075,32 @@ end
 local tgAlpha = 0
 local curAlpha = 0
 local cEnt = NULL
-local cOwner = NULL
 local cText = ""
 local cW, cH = 0, 0
+local lastOwnerCheck = 0
+
+local function GetPropOwnerName(ent)
+    if ent.CPPIGetOwner then
+        local ply = ent:CPPIGetOwner()
+        if IsValid(ply) and ply:IsPlayer() then return ply:Nick() end
+    end
+
+    local nwEnt = ent:GetNWEntity("Owner")
+    if IsValid(nwEnt) and nwEnt:IsPlayer() then return nwEnt:Nick() end
+
+    local nwCreator = ent:GetNWString("creator")
+    if nwCreator and nwCreator ~= "" then return nwCreator end
+
+    local nwOwnerStr = ent:GetNWString("Owner")
+    if nwOwnerStr and nwOwnerStr ~= "" then return nwOwnerStr end
+
+    if ent.GetPlayerName then
+        local pName = ent:GetPlayerName()
+        if pName and pName ~= "" then return pName end
+    end
+
+    return nil
+end
 
 hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     local p = LocalPlayer()
@@ -4089,15 +4112,13 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     if IsValid(ent) and ent:GetClass() == "prop_physics" and tr.HitPos:DistToSqr(p:EyePos()) < 100000 then
         tgAlpha = 1
         
-        local currentOwner = NULL
-        if ent.CPPIGetOwner then currentOwner = ent:CPPIGetOwner() end
-        if not IsValid(currentOwner) then currentOwner = ent:GetNWEntity("Owner") end
-        
-        if ent ~= cEnt or currentOwner ~= cOwner then
+        local ct = CurTime()
+        if ent ~= cEnt or ct > lastOwnerCheck then
             cEnt = ent
-            cOwner = currentOwner
+            lastOwnerCheck = ct + 0.5
             
-            cText = (IsValid(cOwner) and cOwner:IsPlayer()) and ("Владелец: " .. cOwner:Nick()) or "Владелец: Мир"
+            local ownerName = GetPropOwnerName(ent)
+            cText = ownerName and ("Владелец: " .. ownerName) or "Владелец: Мир"
             
             surface.SetFont("AT.Bold.16")
             cW = surface.GetTextSize(cText) + ATScale(24)
@@ -4105,8 +4126,7 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
         end
     else
         tgAlpha = 0
-        cEnt = NULL
-        cOwner = NULL
+        if curAlpha <= 0.01 then cEnt = NULL end
     end
 end)
 
