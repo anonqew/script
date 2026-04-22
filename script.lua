@@ -4079,27 +4079,6 @@ local cText = ""
 local cW, cH = 0, 0
 local lastOwnerCheck = 0
 
-local function GetPropOwnerName(ent)
-    if not IsValid(ent) then return nil end
-
-    if ent.CPPIGetOwner then
-        local ply = ent:CPPIGetOwner()
-        if IsValid(ply) and ply:IsPlayer() then return ply:Nick() end
-    end
-
-    local pNW = ent:GetNWEntity("Owner")
-    if not IsValid(pNW) then pNW = ent:GetNWEntity("owning_ent") end
-    if IsValid(pNW) and pNW:IsPlayer() then return pNW:Nick() end
-
-    local strVars = {"creator", "Owner", "FPP_Owner"}
-    for i = 1, 3 do
-        local str = ent:GetNWString(strVars[i])
-        if str and str ~= "" then return str end
-    end
-
-    return nil
-end
-
 hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     local p = LocalPlayer()
     if not IsValid(p) then return end
@@ -4114,9 +4093,11 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
         if ent ~= cEnt or ct > lastOwnerCheck then
             cEnt = ent
             lastOwnerCheck = ct + 0.5
+
+            local ownerName = ""
+            if ent.GetNWString then ownerName = ent:GetNWString("PropOwnedd", "") end
             
-            local ownerName = GetPropOwnerName(ent)
-            cText = ownerName and ("Владелец: " .. ownerName) or "Владелец: Мир"
+            cText = (ownerName ~= "") and ("Владелец: " .. ownerName) or "Владелец: Мир"
             
             surface.SetFont("AT.Bold.16")
             cW = surface.GetTextSize(cText) + ATScale(24)
