@@ -4080,23 +4080,21 @@ local cW, cH = 0, 0
 local lastOwnerCheck = 0
 
 local function GetPropOwnerName(ent)
+    if not IsValid(ent) then return nil end
+
     if ent.CPPIGetOwner then
         local ply = ent:CPPIGetOwner()
         if IsValid(ply) and ply:IsPlayer() then return ply:Nick() end
     end
 
-    local nwEnt = ent:GetNWEntity("Owner")
-    if IsValid(nwEnt) and nwEnt:IsPlayer() then return nwEnt:Nick() end
+    local pNW = ent:GetNWEntity("Owner")
+    if not IsValid(pNW) then pNW = ent:GetNWEntity("owning_ent") end
+    if IsValid(pNW) and pNW:IsPlayer() then return pNW:Nick() end
 
-    local nwCreator = ent:GetNWString("creator")
-    if nwCreator and nwCreator ~= "" then return nwCreator end
-
-    local nwOwnerStr = ent:GetNWString("Owner")
-    if nwOwnerStr and nwOwnerStr ~= "" then return nwOwnerStr end
-
-    if ent.GetPlayerName then
-        local pName = ent:GetPlayerName()
-        if pName and pName ~= "" then return pName end
+    local strVars = {"creator", "Owner", "FPP_Owner"}
+    for i = 1, 3 do
+        local str = ent:GetNWString(strVars[i])
+        if str and str ~= "" then return str end
     end
 
     return nil
@@ -4109,7 +4107,7 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
     local tr = p:GetEyeTrace()
     local ent = tr.Entity
 
-    if IsValid(ent) and ent:GetClass() == "prop_physics" and tr.HitPos:DistToSqr(p:EyePos()) < 100000 then
+    if IsValid(ent) and not ent:IsWorld() and not ent:IsPlayer() and tr.HitPos:DistToSqr(p:EyePos()) < 250000 then
         tgAlpha = 1
         
         local ct = CurTime()
@@ -4131,7 +4129,7 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
 end)
 
 hook.Add("HUDPaint", "AdminTool.PropOwnerDraw", function()
-    curAlpha = math.Approach(curAlpha, tgAlpha, FrameTime() * 8)
+    curAlpha = math.Approach(curAlpha, tgAlpha, FrameTime() * 10)
     if curAlpha <= 0.01 then return end
 
     local a = curAlpha * 255
