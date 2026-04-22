@@ -4072,6 +4072,56 @@ pnl.Paint = function(s, w, h)
     SafeSimpleText("AdminMode", "AT.Bold.20", tw + ATScale(12), ty + th * 0.5, color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 end
 
+local tgAlpha = 0
+local curAlpha = 0
+local cEnt = NULL
+local cText = ""
+local cW, cH = 0, 0
+
+hook.Add("Think", "AdminTool.PropOwnerCalc", function()
+    local p = LocalPlayer()
+    if not IsValid(p) then return end
+
+    local tr = p:GetEyeTrace()
+    local ent = tr.Entity
+
+    if IsValid(ent) and ent:GetClass() == "prop_physics" and tr.HitPos:DistToSqr(p:EyePos()) < 100000 then
+        tgAlpha = 1
+        
+        if ent ~= cEnt then
+            cEnt = ent
+            local owner = ent.CPPIGetOwner and ent:CPPIGetOwner() or NULL
+            cText = (IsValid(owner) and owner:IsPlayer()) and ("Владелец: " .. owner:Nick()) or "Владелец: Мир"
+            
+            surface.SetFont("AT.Bold.16")
+            cW = surface.GetTextSize(cText) + ATScale(24)
+            cH = ATScale(28)
+        end
+    else
+        tgAlpha = 0
+        cEnt = NULL
+    end
+end)
+
+hook.Add("HUDPaint", "AdminTool.PropOwnerDraw", function()
+    curAlpha = math.Approach(curAlpha, tgAlpha, FrameTime() * 8)
+    if curAlpha <= 0.01 then return end
+
+    local a = curAlpha * 255
+    local scrW, scrH = ScrW(), ScrH()
+    local x = scrW * 0.5 - cW * 0.5
+    local y = scrH * 0.5 + ATScale(30)
+
+    if AT and AT.rndx then
+        AT.rndx.Draw(ATScale(6), x, y, cW, cH, Color(20, 20, 20, a * 0.85))
+        AT.rndx.DrawOutlined(ATScale(6), x, y, cW, cH, Color(255, 255, 255, a * 0.1), 1)
+    end
+    
+    if draw and draw.SimpleText then
+        draw.SimpleText(cText, "AT.Bold.16", scrW * 0.5, y + cH * 0.5, Color(255, 255, 255, a), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+end)
+
 concommand.Add("at_clearcookie", function(ply)
     ply = ply or LocalPlayer()
     ResetAllSettings(ply)
