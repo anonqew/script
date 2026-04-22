@@ -4032,7 +4032,21 @@ end
 
 local trackedHUD = {}
 local nextHUDCheck = 0
-local targetY = ScrH() * 0.5 - ATScale(70)
+
+local function ScanForHUD(parent)
+    local children = parent:GetChildren()
+    for i = 1, #children do
+        local child = children[i]
+        if IsValid(child) then
+            local cls = child.ClassName
+            if cls == "hud.task" or cls == "hud.case" then
+                trackedHUD[#trackedHUD + 1] = child
+            else
+                ScanForHUD(child)
+            end
+        end
+    end
+end
 
 pnl.Think = function(s)
     local p = LocalPlayer()
@@ -4060,49 +4074,27 @@ pnl.Think = function(s)
 
     if cT > nextHUDCheck then
         nextHUDCheck = cT + 1
-        local idx = 1
-        local wChildren = vgui.GetWorldPanel():GetChildren()
-        for i = 1, #wChildren do
-            local p1 = wChildren[i]
-            if IsValid(p1) then
-                local c1 = p1.ClassName
-                if isstring(c1) and string.StartWith(c1, "hud.") then
-                    trackedHUD[idx] = p1; idx = idx + 1
-                end
-                local cChildren = p1:GetChildren()
-                for j = 1, #cChildren do
-                    local p2 = cChildren[j]
-                    if IsValid(p2) then
-                        local c2 = p2.ClassName
-                        if isstring(c2) and string.StartWith(c2, "hud.") then
-                            trackedHUD[idx] = p2; idx = idx + 1
-                        end
-                    end
-                end
-            end
-        end
-        for i = idx, #trackedHUD do trackedHUD[i] = nil end
+        for i = 1, #trackedHUD do trackedHUD[i] = nil end
+        ScanForHUD(vgui.GetWorldPanel())
     end
     
     local maxBottom = 0
-    local limitX = ATScale(200)
-    local screenH = ScrH()
-    
     for i = 1, #trackedHUD do
         local child = trackedHUD[i]
-        if IsValid(child) and child:IsVisible() and child:GetTall() < screenH * 0.8 then
-            local cx, cy = child:LocalToScreen(0, 0)
-            if cx > -1000 and cx < limitX then
-                local bottom = cy + child:GetTall()
-                if bottom > maxBottom then maxBottom = bottom end
-            end
+        if IsValid(child) and child:IsVisible() then
+            if type(child.ShouldDraw) == "function" and child:ShouldDraw(p) == false then goto skip end
+            
+            local _, cy = child:LocalToScreen(0, 0)
+            local bottom = cy + child:GetTall()
+            if bottom > maxBottom then maxBottom = bottom end
+            
+            ::skip::
         end
     end
     
-    local defY = screenH * 0.5 - ATScale(70)
-    targetY = maxBottom > 0 and (maxBottom + ATScale(16)) or defY
-    
+    local targetY = maxBottom > 0 and (maxBottom + ATScale(16)) or (ScrH() * 0.5 - ATScale(70))
     local curX, curY = s:GetPos()
+    
     if math.abs(curY - targetY) > 0.5 then
         s:SetPos(curX, math_lerp(fT * 10, curY, targetY))
     end
