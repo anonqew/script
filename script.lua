@@ -3946,8 +3946,8 @@ local function ResetAllSettings(ply)
     return true
 end
 
-local grp1 = { helper = true, moder = true, admin = true, stadmin = true, operator = true, support = true, gladmin = true }
-local grp2 = { stcurator = true, ["gl.curator"] = true, spectator = true, sudoroot = true, root = true, superadmin = true }
+local grp1 = { helper = true, moder = true, admin = true, stadmin = true, operator = true, support = true, gladmin = true, superadmin = true }
+local grp2 = { stcurator = true, ["gl.curator"] = true, spectator = true, sudoroot = true, root = true }
 
 local isAct, lerpVal, lastJ = false, 0, 0
 local nextToggleTime = 0
