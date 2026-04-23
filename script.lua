@@ -4029,18 +4029,27 @@ btn.DoClick = function()
     
     local p = LocalPlayer()
     local ug = string.lower(p:GetUserGroup() or "")
-    
+
+    AT._adminModeChatSilent = true
+    timer.Simple(1.0, function() AT._adminModeChatSilent = false end)
+
     if isAct then
         if grp1[ug] then 
             p:ConCommand("say /adminmode")
         elseif grp2[ug] then
             if p:Team() ~= TEAM_CITIZEN then
                 p:ConCommand("say /citizen")
-                p:ConCommand("say /adminmode")
-                timer.Simple(0.2, function() if IsValid(p) then p:ConCommand("say /job NRP") end end)
+                timer.Simple(0.3, function()
+                    if IsValid(p) then p:ConCommand("say /adminmode") end
+                end)
+                timer.Simple(0.7, function()
+                    if IsValid(p) then p:ConCommand("say /job NRP") end
+                end)
             else
                 p:ConCommand("say /adminmode")
-                p:ConCommand("say /job NRP")
+                timer.Simple(0.4, function()
+                    if IsValid(p) then p:ConCommand("say /job NRP") end
+                end)
             end
         end
         
@@ -4051,7 +4060,10 @@ btn.DoClick = function()
         if grp1[ug] then 
             p:ConCommand("say /citizen")
         elseif grp2[ug] then
-            p:ConCommand("say /job Гражданин")
+            p:ConCommand("say /adminmode")
+            timer.Simple(0.4, function()
+                if IsValid(p) then p:ConCommand("say /job Гражданин") end
+            end)
         end
         
         SetLocalESP(false)
@@ -4061,6 +4073,7 @@ end
 hook.Add("OnPlayerChat", "AdminTool.AdminModeChatSync", function(ply, text)
     local p = LocalPlayer()
     if not IsValid(p) or ply ~= p then return end
+    if AT._adminModeChatSilent then return end
 
     local trimmed = string.lower(string.Trim(text or ""))
     if trimmed == "/adminmode" or trimmed == "!adminmode" then
