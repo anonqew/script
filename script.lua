@@ -4040,7 +4040,7 @@ btn.DoClick = function()
                 timer.Simple(0.2, function() if IsValid(p) then p:ConCommand("say /job NRP") end end)
             else
                 p:ConCommand("say /adminmode")
-                p:ConCommand("say /job NRP")
+                timer.Simple(0.2, function() if IsValid(p) then p:ConCommand("say /job NRP") end end)
             end
         end
         
@@ -4051,7 +4051,8 @@ btn.DoClick = function()
         if grp1[ug] then 
             p:ConCommand("say /citizen")
         elseif grp2[ug] then
-            p:ConCommand("say /job Гражданин")
+            p:ConCommand("say /adminmode")
+            timer.Simple(0.2, function() if IsValid(p) then p:ConCommand("say /job Гражданин") end end)
         end
         
         SetLocalESP(false)
