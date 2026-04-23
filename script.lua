@@ -3958,15 +3958,12 @@ local function IsPlayerInServerAdminMode(ply, ug)
     if not IsValid(ply) then return false end
     ug = ug or string.lower(ply:GetUserGroup() or "")
 
-    if grp2[ug] then
-        local ok, val = pcall(function() return ply:GetBVar("adminmode") end)
-        if ok and val == true then return true end
-        if ok and val == false then return false end
-        return false
-    end
-
     if grp1[ug] then
         return ply:Team() == TEAM_ADMIN
+    end
+
+    if grp2[ug] then
+        return nil
     end
 
     return false
@@ -4061,6 +4058,20 @@ btn.DoClick = function()
     end
 end
 
+hook.Add("OnPlayerChat", "AdminTool.AdminModeChatSync", function(ply, text)
+    local p = LocalPlayer()
+    if not IsValid(p) or ply ~= p then return end
+
+    local trimmed = string.lower(string.Trim(text or ""))
+    if trimmed == "/adminmode" or trimmed == "!adminmode" then
+        local ug = string.lower(p:GetUserGroup() or "")
+        if grp2[ug] then
+            isAct = not isAct
+            SetLocalESP(isAct)
+        end
+    end
+end)
+
 pnl.Think = function()
     local p = LocalPlayer()
     if not IsValid(p) then return end
@@ -4071,7 +4082,7 @@ pnl.Think = function()
     if grp1[ug] or grp2[ug] then
         local serverState = IsPlayerInServerAdminMode(p, ug)
 
-        if serverState ~= isAct then
+        if serverState ~= nil and serverState ~= isAct then
             isAct = serverState
             SetLocalESP(serverState)
         end
