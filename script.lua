@@ -2279,112 +2279,122 @@ if AT.activeCatIndex == 2 then
             AT.rndx.Draw(ATScale(14), 0, 0, w, h, ColorAlpha(THEME.subBg, 240))
             AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
 
-            SafeSimpleText("● LIVE / FOV-FRUSTUM CULLING", "AT.Bold.14", ATScale(18), ATScale(14), THEME.green, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-            SafeSimpleText("Отсечение объектов вне поля зрения камеры", "AT.Light.14", ATScale(18), ATScale(32), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-
-            local radarR = math.min(h - ATScale(70), ATScale(230)) * 0.5
-            local radarCX = ATScale(30) + radarR
-            local radarCY = h * 0.5 + ATScale(14)
-
-            for ring = 1, 3 do
-                local rr = radarR * (ring / 3)
-                AT.rndx.DrawCircleOutlined(radarCX, radarCY, rr * 2, ColorAlpha(THEME.green, 40 - ring * 8), 1)
-            end
-
-            local fov = GetConVar("at_opt_ffc_fov"):GetFloat()
-            local halfAng = math.rad(fov * 0.5)
-            local steps = 18
-            for s = 0, steps do
-                local t = -halfAng + (halfAng * 2) * (s / steps)
-                local px = radarCX + math.sin(t) * radarR
-                local py = radarCY - math.cos(t) * radarR
-                if s > 0 then
-                    local midX = (radarCX + px) * 0.5
-                    local midY = (radarCY + py) * 0.5
-                    AT.rndx.DrawCircle(midX, midY, ATScale(2), ColorAlpha(THEME.green, 18))
-                end
-            end
-
-            for edgeSign = -1, 1, 2 do
-                local ex = radarCX + math.sin(halfAng * edgeSign) * radarR
-                local ey = radarCY - math.cos(halfAng * edgeSign) * radarR
-                for t = 0, 1, 0.04 do
-                    local dx = Lerp(t, radarCX, ex)
-                    local dy = Lerp(t, radarCY, ey)
-                    AT.rndx.DrawCircle(dx, dy, ATScale(2), ColorAlpha(THEME.green, 90))
-                end
-            end
-
-            AT.rndx.DrawCircle(radarCX, radarCY, ATScale(10), Color(255, 255, 255, 200))
-            AT.rndx.DrawCircle(radarCX, radarCY, ATScale(5), Color(0, 0, 0, 255))
-            AT.rndx.DrawCircle(radarCX, radarCY, ATScale(3), THEME.green)
-
-            OptCore.radar_sweep_angle = (OptCore.radar_sweep_angle + FrameTime() * 90) % 360
-            local sweepRad = math.rad(OptCore.radar_sweep_angle)
-            for t = 0, 1, 0.04 do
-                local dx = radarCX + math.sin(sweepRad) * radarR * t
-                local dy = radarCY - math.cos(sweepRad) * radarR * t
-                AT.rndx.DrawCircle(dx, dy, ATScale(2), ColorAlpha(THEME.green, math.Round(180 * (1 - t))))
-            end
-
             local plr = LocalPlayer()
-            if IsValid(plr) then
-                local camPos = GetCameraPos()
-                local camAng = plr:EyeAngles()
-                local forward = camAng:Forward(); forward.z = 0; forward:Normalize()
-                local right = camAng:Right(); right.z = 0; right:Normalize()
+            local isAdminJob = IsValid(plr) and plr:Team() == TEAM_ADMIN
 
-                local maxShowDist = 3000
-                local shown, culled = 0, 0
+            SafeSimpleText("● LIVE / FOV-FRUSTUM CULLING", "AT.Bold.14", ATScale(18), ATScale(14), THEME.green, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            SafeSimpleText(isAdminJob and "Отсечение объектов вне поля зрения камеры" or "Статистика работы подсистем оптимизации", "AT.Light.14", ATScale(18), ATScale(32), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
-                for _, ent in ipairs(ents.GetAll()) do
-                    if not IsValid(ent) or ent == plr then continue end
-                    if ent:IsWeapon() and ent:GetOwner() and IsValid(ent:GetOwner()) then continue end
+            local metrX, metrW
 
-                    local isPly = ent:IsPlayer()
-                    local isProp = ent:GetClass() == "prop_physics" or ent:GetClass() == "prop_physics_multiplayer"
-                    local isEnt = ent:IsNPC() or (isPly == false and isProp == false and (ent.IsVehicle and ent:IsVehicle()) or false)
+            if isAdminJob then
+                local radarR = math.min(h - ATScale(70), ATScale(230)) * 0.5
+                local radarCX = ATScale(30) + radarR
+                local radarCY = h * 0.5 + ATScale(14)
 
-                    if not (isPly or isProp or isEnt) then continue end
-                    if ent:IsDormant() then continue end
-
-                    local delta = ent:GetPos() - camPos
-                    local distXY = math.sqrt(delta.x * delta.x + delta.y * delta.y)
-                    if distXY > maxShowDist or distXY < 1 then continue end
-
-                    local forwardComp = delta:Dot(forward) / distXY
-                    local rightComp = delta:Dot(right) / distXY
-
-                    local scrX = radarCX + rightComp * (distXY / maxShowDist) * radarR
-                    local scrY = radarCY - forwardComp * (distXY / maxShowDist) * radarR
-
-                    local inCone = forwardComp > OptCore.ffc_fov_cos
-
-                    local col, sz
-                    if isPly then
-                        col = inCone and Color(80, 220, 255, 230) or Color(60, 80, 100, 120)
-                        sz  = ATScale(7)
-                    elseif isProp then
-                        col = inCone and Color(255, 200, 80, 200) or Color(80, 70, 50, 110)
-                        sz  = ATScale(5)
-                    else
-                        col = inCone and Color(200, 120, 255, 200) or Color(60, 40, 80, 110)
-                        sz  = ATScale(5)
-                    end
-
-                    AT.rndx.DrawCircle(scrX, scrY, sz, col)
-                    if inCone then
-                        shown = shown + 1
-                    else
-                        culled = culled + 1
-                    end
-
-                    if shown + culled > 80 then break end
+                for ring = 1, 3 do
+                    local rr = radarR * (ring / 3)
+                    AT.rndx.DrawCircleOutlined(radarCX, radarCY, rr * 2, ColorAlpha(THEME.green, 40 - ring * 8), 1)
                 end
+
+                local fov = GetConVar("at_opt_ffc_fov"):GetFloat()
+                local halfAng = math.rad(fov * 0.5)
+                local steps = 18
+                for s = 0, steps do
+                    local t = -halfAng + (halfAng * 2) * (s / steps)
+                    local px = radarCX + math.sin(t) * radarR
+                    local py = radarCY - math.cos(t) * radarR
+                    if s > 0 then
+                        local midX = (radarCX + px) * 0.5
+                        local midY = (radarCY + py) * 0.5
+                        AT.rndx.DrawCircle(midX, midY, ATScale(2), ColorAlpha(THEME.green, 18))
+                    end
+                end
+
+                for edgeSign = -1, 1, 2 do
+                    local ex = radarCX + math.sin(halfAng * edgeSign) * radarR
+                    local ey = radarCY - math.cos(halfAng * edgeSign) * radarR
+                    for t = 0, 1, 0.04 do
+                        local dx = Lerp(t, radarCX, ex)
+                        local dy = Lerp(t, radarCY, ey)
+                        AT.rndx.DrawCircle(dx, dy, ATScale(2), ColorAlpha(THEME.green, 90))
+                    end
+                end
+
+                AT.rndx.DrawCircle(radarCX, radarCY, ATScale(10), Color(255, 255, 255, 200))
+                AT.rndx.DrawCircle(radarCX, radarCY, ATScale(5), Color(0, 0, 0, 255))
+                AT.rndx.DrawCircle(radarCX, radarCY, ATScale(3), THEME.green)
+
+                OptCore.radar_sweep_angle = (OptCore.radar_sweep_angle + FrameTime() * 90) % 360
+                local sweepRad = math.rad(OptCore.radar_sweep_angle)
+                for t = 0, 1, 0.04 do
+                    local dx = radarCX + math.sin(sweepRad) * radarR * t
+                    local dy = radarCY - math.cos(sweepRad) * radarR * t
+                    AT.rndx.DrawCircle(dx, dy, ATScale(2), ColorAlpha(THEME.green, math.Round(180 * (1 - t))))
+                end
+
+                if IsValid(plr) then
+                    local camPos = GetCameraPos()
+                    local camAng = plr:EyeAngles()
+                    local forward = camAng:Forward(); forward.z = 0; forward:Normalize()
+                    local right = camAng:Right(); right.z = 0; right:Normalize()
+
+                    local maxShowDist = 3000
+                    local shown, culled = 0, 0
+
+                    for _, ent in ipairs(ents.GetAll()) do
+                        if not IsValid(ent) or ent == plr then continue end
+                        if ent:IsWeapon() and ent:GetOwner() and IsValid(ent:GetOwner()) then continue end
+
+                        local isPly = ent:IsPlayer()
+                        local isProp = ent:GetClass() == "prop_physics" or ent:GetClass() == "prop_physics_multiplayer"
+                        local isEnt = ent:IsNPC() or (isPly == false and isProp == false and (ent.IsVehicle and ent:IsVehicle()) or false)
+
+                        if not (isPly or isProp or isEnt) then continue end
+                        if ent:IsDormant() then continue end
+
+                        local delta = ent:GetPos() - camPos
+                        local distXY = math.sqrt(delta.x * delta.x + delta.y * delta.y)
+                        if distXY > maxShowDist or distXY < 1 then continue end
+
+                        local forwardComp = delta:Dot(forward) / distXY
+                        local rightComp = delta:Dot(right) / distXY
+
+                        local scrX = radarCX + rightComp * (distXY / maxShowDist) * radarR
+                        local scrY = radarCY - forwardComp * (distXY / maxShowDist) * radarR
+
+                        local inCone = forwardComp > OptCore.ffc_fov_cos
+
+                        local col, sz
+                        if isPly then
+                            col = inCone and Color(80, 220, 255, 230) or Color(60, 80, 100, 120)
+                            sz  = ATScale(7)
+                        elseif isProp then
+                            col = inCone and Color(255, 200, 80, 200) or Color(80, 70, 50, 110)
+                            sz  = ATScale(5)
+                        else
+                            col = inCone and Color(200, 120, 255, 200) or Color(60, 40, 80, 110)
+                            sz  = ATScale(5)
+                        end
+
+                        AT.rndx.DrawCircle(scrX, scrY, sz, col)
+                        if inCone then
+                            shown = shown + 1
+                        else
+                            culled = culled + 1
+                        end
+
+                        if shown + culled > 80 then break end
+                    end
+                end
+
+                metrX = radarCX + radarR + ATScale(40)
+                metrW = w - metrX - ATScale(18)
+            else
+                metrX = ATScale(18)
+                metrW = w - metrX - ATScale(18)
             end
 
-            local metrX = radarCX + radarR + ATScale(40)
-            local metrW = w - metrX - ATScale(18)
             local metrY = ATScale(56)
 
             local function metricRow(y, label, value, valueCol, barFrac, barCol)
