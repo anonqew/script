@@ -3954,6 +3954,29 @@ local nextToggleTime = 0
 local inactiveCol = Color(255, 255, 255, 102)
 local math_lerp, frameT, curT = Lerp, FrameTime, CurTime
 
+local function IsPlayerInServerAdminMode(ply, ug)
+    if not IsValid(ply) then return false end
+    ug = ug or string.lower(ply:GetUserGroup() or "")
+
+    if grp2[ug] then
+        local ok, val = pcall(function() return ply:GetBVar("adminmode") end)
+        if ok and val == true then return true end
+        if ok and val == false then return false end
+        return false
+    end
+
+    if grp1[ug] then
+        return ply:Team() == TEAM_ADMIN
+    end
+
+    return false
+end
+
+local function SetLocalESP(enabled)
+    AT.showESP = enabled and true or false
+    cookie.Set("AT_ESP", enabled and "1" or "0")
+end
+
 local origHasToolAccess = HasToolAccess
 HasToolAccess = function(ply)
     if not IsValid(ply) then return false end
@@ -4025,8 +4048,7 @@ btn.DoClick = function()
         end
         
         if grp1[ug] or grp2[ug] then
-            AT.showESP = true
-            cookie.Set("AT_ESP", "1")
+            SetLocalESP(true)
         end
     else
         if grp1[ug] then 
@@ -4035,30 +4057,26 @@ btn.DoClick = function()
             p:ConCommand("say /job Гражданин")
         end
         
-        AT.showESP = false
-        cookie.Set("AT_ESP", "0")
+        SetLocalESP(false)
     end
 end
 
 pnl.Think = function()
     local p = LocalPlayer()
     if not IsValid(p) then return end
-    
+
     local cJ = p:Team()
     local ug = string.lower(p:GetUserGroup() or "")
-    
-    if isAct then
-        if grp1[ug] and lastJ == TEAM_ADMIN and cJ ~= TEAM_ADMIN then
-            isAct = false
-            AT.showESP = false
-            cookie.Set("AT_ESP", "0")
-        elseif grp2[ug] and lastJ == TEAM_CITIZEN and cJ ~= TEAM_CITIZEN then
-            isAct = false
-            AT.showESP = false
-            cookie.Set("AT_ESP", "0")
-            p:ConCommand("say /citizen")
+
+    if grp1[ug] or grp2[ug] then
+        local serverState = IsPlayerInServerAdminMode(p, ug)
+
+        if serverState ~= isAct then
+            isAct = serverState
+            SetLocalESP(serverState)
         end
     end
+
     lastJ = cJ
 end
 
@@ -4107,7 +4125,7 @@ hook.Add("Think", "AdminTool.PropOwnerCalc", function()
             local ownerName = ""
             if ent.GetNWString then ownerName = ent:GetNWString("PropOwnedd", "") end
             
-            cText = (ownerName ~= "") and ("Владелец: " .. ownerName) or "Владелец: Мир"
+            cText = (ownerName ~= "") and ("Владелец: " .. ownerName) or "Владелец: Server"
             
             surface.SetFont("AT.Bold.16")
             cW = surface.GetTextSize(cText) + ATScale(24)
