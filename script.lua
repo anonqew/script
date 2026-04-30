@@ -383,7 +383,7 @@ local PROJECT_CONFIGS = {
             NLR = { TimeOpt("10mi", TMi(10)) }, FRP = { TimeOpt("10mi", TMi(10)) }, PLB = { TimeOpt("20mi", TMi(20)) },
             BA = { TimeOpt("1d", TD(1)), TimeOpt("3d", TD(3)) }, FA = { TimeOpt("10mi", TMi(10)) }, FWanted = { TimeOpt("10mi", TMi(10)) },
             CJ = { TimeOpt("10mi", TMi(10)) }, JA = { TimeOpt("10mi", TMi(10)), TimeOpt("15mi", TMi(15)) },
-            OSADM = { TimeOpt("30mi", TMi(30)), TimeOpt("45mi", TMi(45)) }, OSAR = { TimeOpt("10mi", TMi(10)), TimeOpt("24h", TH(24)) },
+            OSADM = { TimeOpt("30mi", TMi(30)), TimeOpt("45mi", TMi(45)) }, OSAR = { TimeOpt("10h", TH(10)), TimeOpt("24h", TH(24)) },
             OSS = { TimeOpt("4d", TD(4)) }, ["НПЧ"] = { TimeOpt("30mi", TMi(30)) }, ["Махинации"] = { TimeOpt("1h", TH(1)), TimeOpt("4d", TD(4)) },
             SR = { TimeOpt("30mi", TMi(30)) }, ["РМР"] = { TimeOpt("10mi", TMi(10)) }, FW = { TimeOpt("10mi", TMi(10)) },
             GZA = { TimeOpt("10mi", TMi(10)) }, KZ = { TimeOpt("10mi", TMi(10)) }, ONA = { TimeOpt("1d", TD(1)) },
