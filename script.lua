@@ -4,6 +4,7 @@ local AT = {
     showInteract = cookie.GetNumber("AT_Interact", 0) == 1,
     showAutoAdvert = cookie.GetNumber("AT_AutoAdvert", 0) == 1,
     autoAdvertCooldownMinutes = math.Clamp(cookie.GetNumber("AT_AutoAdvertCooldownMinutes", 10), 10, 60),
+    punishMultiplier = (function() local v = cookie.GetNumber("AT_PunishMultiplier", 1); if v == 4 or v == 6 then return v end; return 1 end)(),
 
     DEFAULT_MENU_KEY = KEY_B,
     MenuKey = math.floor(tonumber(cookie.GetNumber("AT_MenuBind", KEY_B)) or KEY_B),
@@ -61,6 +62,7 @@ local UI_Frames = {
     About = nil,
     AutoAdvert = nil,
     MenuBind = nil,
+    PunishMultiplier = nil,
     ThemeColor = nil,
     DiscordGate = nil,
     PlayerStats = nil,
@@ -292,6 +294,7 @@ local DATA = {
             { cmd = "Информация на игроке", desc = "Отображение доп. информации на игроке", isToggle = true, adminOnly = true },
             { cmd = "Взаимодействие с игроком", desc = "Отображение меню взаимодействия с игроком", isToggle = true},
             { cmd = "Авто-реклама", desc = "Автоматически отправляет 4 сообщения с выбранным интервалом", isToggle = true },
+            { cmd = "Множитель наказания", desc = "Умножает время всех наказаний на выбранный коэффициент", isAction = true },
             { cmd = "Клавиша открытия меню", desc = "Изменяет кнопку открытия главного меню AdminTool", isAction = true }
         }
     }
@@ -621,6 +624,52 @@ local function FormatTime(min)
         if n > 0 then table.insert(out, n .. v[1]); min = min % v[2] end
     end
     return table.concat(out)
+end
+
+local TIME_UNIT_MAP = { mo = 43200, w = 10080, d = 1440, h = 60, mi = 1, m = 1 }
+
+local function ParseTimeString(str)
+    if not isstring(str) then return nil end
+    str = string.lower(string.Trim(str))
+    if str == "" then return nil end
+    if string.find(str, "^[%-%+]?%d+%.?%d*$") then return nil end
+    local total, found, pos = 0, false, 1
+    local len = #str
+    while pos <= len do
+        local sNum, eNum = string.find(str, "^%d+", pos)
+        if not sNum then return nil end
+        local num = tonumber(string.sub(str, sNum, eNum))
+        if not num then return nil end
+        local sUnit, eUnit = string.find(str, "^[a-zа-я]+", eNum + 1)
+        if not sUnit then return nil end
+        local unit = string.sub(str, sUnit, eUnit)
+        local mul = TIME_UNIT_MAP[unit]
+        if not mul then return nil end
+        total = total + num * mul
+        found = true
+        pos = eUnit + 1
+        local sSep, eSep = string.find(str, "^[%s,]+", pos)
+        if sSep then pos = eSep + 1 end
+    end
+    if not found then return nil end
+    return total
+end
+
+local function GetPunishMultiplier()
+    local m = AT.punishMultiplier
+    if m == 4 or m == 6 then return m end
+    return 1
+end
+
+local function SetPunishMultiplier(m)
+    m = tonumber(m) or 1
+    if m ~= 1 and m ~= 4 and m ~= 6 then m = 1 end
+    AT.punishMultiplier = m
+    cookie.Set("AT_PunishMultiplier", tostring(m))
+end
+
+local function ApplyPunishMultiplier(minutes)
+    return math.floor((tonumber(minutes) or 0) * GetPunishMultiplier())
 end
 
 local function FormatLimitText(limit) return limit == math.huge and "perma" or FormatTime(limit) end
@@ -1729,6 +1778,69 @@ local function OpenAutoAdvertSettings()
     end
 end
 
+local function OpenPunishMultiplierSettings()
+    if not IsValid(UI_Frames.AdminTool) then return end
+    if IsValid(UI_Frames.PunishMultiplier) and UI_Frames.PunishMultiplier.CloseDrawer then UI_Frames.PunishMultiplier:CloseDrawer(true) end
+    local drawer, body = CreateDrawer(UI_Frames.AdminTool, "Множитель наказания", "Выберите коэффициент умножения времени", ATScale(460))
+    UI_Frames.PunishMultiplier = drawer
+
+    local preview = CreateCard(body, ATScale(96), ATScale(14))
+    preview.Paint = function(_, w, h)
+        PaintSubPanel(0, 0, w, h, ATScale(14))
+        SafeSimpleText("Текущий множитель", "AT.Light.16", ATScale(16), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        local mult = GetPunishMultiplier()
+        local txt = mult == 1 and "Выключен (×1)" or ("×" .. mult)
+        SafeSimpleText(txt, "AT.Bold.30", ATScale(16), ATScale(42), mult == 1 and color_white or THEME.green, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    end
+
+    CreateSectionLabel(body, "Доступные множители")
+
+    local options = {
+        { mult = 1, title = "Без множителя (×1)", desc = "Стандартное время наказания" },
+        { mult = 4, title = "Множитель ×4", desc = "Время наказаний умножается в 4 раза (10 мин → 40 мин)" },
+        { mult = 6, title = "Множитель ×6", desc = "Время наказаний умножается в 6 раз (10 мин → 60 мин)" }
+    }
+
+    local cards = {}
+    local function RebuildCards()
+        for _, c in ipairs(cards) do if IsValid(c) then c:InvalidateLayout(true) end end
+        if IsValid(preview) then preview:InvalidateLayout(true) end
+    end
+
+    for _, opt in ipairs(options) do
+        local card = CreateCard(body, ATScale(78), ATScale(10)); card:SetMouseInputEnabled(true); card:SetCursor("hand")
+        table.insert(cards, card)
+        card.Paint = function(s, w, h)
+            PaintSubPanel(0, 0, w, h, ATScale(14))
+            local active = GetPunishMultiplier() == opt.mult
+            if active and AT.rndx then
+                AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.green, 2)
+            end
+            if s:IsHovered() then PaintHoverFill(0, 0, w, h, Color(255, 255, 255, 10), ATScale(14)) end
+            SafeSimpleText(opt.title, "AT.Bold.20", ATScale(16), ATScale(12), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            SafeSimpleText(opt.desc, "AT.Light.16", ATScale(16), ATScale(42), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            SafeSimpleText(active and "Активен" or "Нажми для выбора", "AT.Light.16", w - ATScale(16), h * 0.5, active and THEME.green or THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        end
+        card.OnCursorEntered = PlayHover
+        card.OnMousePressed = function(_, code)
+            if code ~= MOUSE_LEFT then return end
+            PlayClick()
+            SetPunishMultiplier(opt.mult)
+            RebuildCards()
+            notification.AddLegacy("Множитель наказания установлен: ×" .. opt.mult, 0, 3)
+        end
+    end
+
+    local info = CreateCard(body, ATScale(120), 0); info.Paint = function(_, w, h) PaintSubPanel(0, 0, w, h, ATScale(14)) end
+    local infoTitle = info:Add("DLabel"); infoTitle:SetText("Как это работает"); infoTitle:SetFont("AT.Bold.18"); infoTitle:SetTextColor(color_white); infoTitle:SetPos(ATScale(16), ATScale(12)); infoTitle:SizeToContents()
+    local infoDesc = info:Add("DLabel"); infoDesc:SetText("Время каждого выбранного интервала умножается на коэффициент перед отправкой команды. Например, при ×6 наказание на 10 минут превратится в 60 минут. Доступно только обладателям соответствующего разрешения."); infoDesc:SetFont("AT.Light.16"); infoDesc:SetTextColor(THEME.textSub); infoDesc:SetWrap(true); infoDesc:SetAutoStretchVertical(true)
+    info.PerformLayout = function(s, w)
+        local textW = w - ATScale(32)
+        infoDesc:SetPos(ATScale(16), infoTitle.y + infoTitle:GetTall() + ATScale(10)); infoDesc:SetWide(textW); infoDesc:SizeToContentsY()
+        s:SetTall(infoDesc.y + infoDesc:GetTall() + ATScale(14))
+    end
+end
+
 local function OpenMenuBindSettings()
     if not IsValid(UI_Frames.AdminTool) then return end
     if IsValid(UI_Frames.MenuBind) and UI_Frames.MenuBind.CloseDrawer then UI_Frames.MenuBind:CloseDrawer(true) end
@@ -1894,16 +2006,22 @@ local function OpenPunishmentMenu(target)
     end
 
     local function GetSelectedDurationData(tData)
-        if tData.t == "perma" then return { valid = true, hasPerma = true, totalMinutes = 0, text = "perma", details = {}, missing = {} } end
-        local total, hasPerma, details, missing = 0, false, {}, {}
+        if tData.t == "perma" then return { valid = true, hasPerma = true, totalMinutes = 0, text = "perma", details = {}, missing = {}, multiplier = GetPunishMultiplier(), baseTotal = 0 } end
+        local baseTotal, hasPerma, details, missing = 0, false, {}, {}
+        local mult = GetPunishMultiplier()
         for reason in pairs(state.reasons) do
             local chosen = state.reasonTimes[reason]
             if not chosen then table.insert(missing, reason) else
-                if chosen.perma then hasPerma = true else total = total + (chosen.minutes or 0) end
-                table.insert(details, reason .. " — " .. chosen.label)
+                if chosen.perma then hasPerma = true else baseTotal = baseTotal + (chosen.minutes or 0) end
+                if chosen.perma or mult == 1 then
+                    table.insert(details, reason .. " — " .. chosen.label)
+                else
+                    table.insert(details, reason .. " — " .. chosen.label .. " ×" .. mult .. " = " .. FormatTime(ApplyPunishMultiplier(chosen.minutes or 0)))
+                end
             end
         end
-        return { valid = #missing <= 0, hasPerma = hasPerma, totalMinutes = total, text = hasPerma and "perma" or FormatTime(total), details = details, missing = missing }
+        local total = ApplyPunishMultiplier(baseTotal)
+        return { valid = #missing <= 0, hasPerma = hasPerma, totalMinutes = total, text = hasPerma and "perma" or FormatTime(total), details = details, missing = missing, multiplier = mult, baseTotal = baseTotal }
     end
 
     local function SelectReasonWithOption(reason, opt, tData)
@@ -1945,21 +2063,116 @@ local function OpenPunishmentMenu(target)
     end
 
     local val = minM
-    if hasSlider then
-        local valLbl = m:Add("DLabel")
-        valLbl:SetFont("AT.Bold.18"); valLbl:SetTextColor(THEME.gold); valLbl:SetPos(ATScale(14), yOffset); valLbl:SetSize(w - ATScale(28), ATScale(20)); valLbl:SetContentAlignment(5)
-        valLbl:SetText(FormatTime(val))
-        yOffset = yOffset + ATScale(24)
+    local entry, sl
+    local syncing = false
+    local errorFlash = 0
+    local inputValid = true
 
-        local sl = m:Add("DSlider")
+    local function ClampVal(v)
+        return math.Clamp(math.Round(tonumber(v) or minM), minM, maxM)
+    end
+
+    local function UpdateEntryFromVal()
+        if not IsValid(entry) then return end
+        syncing = true
+        entry:SetText(FormatTime(val))
+        syncing = false
+        inputValid = true
+    end
+
+    local function UpdateSliderFromVal()
+        if not IsValid(sl) or maxM <= minM then return end
+        syncing = true
+        sl:SetSlideX(math.Clamp((val - minM) / (maxM - minM), 0, 1))
+        syncing = false
+    end
+
+    if hasSlider then
+        local entryWrap = m:Add("DPanel")
+        entryWrap:SetPos(ATScale(14), yOffset); entryWrap:SetSize(w - ATScale(28), ATScale(34))
+        entryWrap.Paint = function(_, ew, eh)
+            PaintSubPanel(0, 0, ew, eh, ATScale(8))
+            local borderCol = THEME.green
+            if not inputValid then borderCol = THEME.red or Color(220, 80, 80) end
+            if errorFlash > 0 and AT.rndx then
+                AT.rndx.DrawOutlined(ATScale(8), 0, 0, ew, eh, ColorAlpha(THEME.red or Color(220, 80, 80), math.Round(255 * errorFlash)), 2)
+                errorFlash = math.max(0, errorFlash - FrameTime() * 2)
+            elseif AT.rndx then
+                AT.rndx.DrawOutlined(ATScale(8), 0, 0, ew, eh, ColorAlpha(borderCol, 60), 1)
+            end
+        end
+
+        entry = entryWrap:Add("DTextEntry")
+        entry:Dock(FILL); entry:DockMargin(ATScale(10), ATScale(4), ATScale(10), ATScale(4))
+        entry:SetFont("AT.Bold.18"); entry:SetTextColor(THEME.gold); entry:SetDrawBackground(false); entry:SetDrawBorder(false)
+        entry:SetCursorColor(color_white); entry:SetHighlightColor(ColorAlpha(THEME.green, 70))
+        entry:SetUpdateOnType(false)
+        entry:SetText(FormatTime(val))
+        entry.Paint = function(s, ew, eh)
+            s:DrawTextEntryText(THEME.gold, THEME.green, color_white)
+            if string.Trim(s:GetValue() or "") == "" and not s:HasFocus() then
+                SafeSimpleText("Например: 10mi, 1h, 2d", "AT.Light.16", 0, eh * 0.5, Color(255, 255, 255, 110), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            end
+        end
+
+        local function CommitInput()
+            local raw = string.Trim(entry:GetValue() or "")
+            if raw == "" then
+                inputValid = false
+                errorFlash = 1
+                surface.PlaySound("buttons/button10.wav")
+                UpdateEntryFromVal()
+                return false
+            end
+            local parsed = ParseTimeString(raw)
+            if not parsed then
+                inputValid = false
+                errorFlash = 1
+                surface.PlaySound("buttons/button10.wav")
+                notification.AddLegacy("Неверный формат времени. Используйте: 10mi, 1h, 2d, 1w, 1mo", 1, 3)
+                return false
+            end
+            local clamped = ClampVal(parsed)
+            if clamped ~= parsed then
+                notification.AddLegacy("Время скорректировано до диапазона: " .. FormatTime(minM) .. " — " .. FormatTime(maxM), 1, 3)
+            end
+            val = clamped
+            UpdateEntryFromVal()
+            UpdateSliderFromVal()
+            return true
+        end
+
+        entry.OnEnter = function() CommitInput() end
+        entry.OnLoseFocus = function() if not syncing then CommitInput() end end
+        entry.OnValueChange = function(s, v) if syncing then return end; inputValid = ParseTimeString(string.Trim(v or "")) ~= nil end
+
+        yOffset = yOffset + ATScale(38)
+
+        sl = m:Add("DSlider")
         sl:SetPos(ATScale(14), yOffset); sl:SetSize(w - ATScale(28), ATScale(20)); sl:SetTrapInside(true)
         SetStandardSliderPaint(sl)
-        sl.OnValueChanged = function(_, v) val = math.Round(minM + v * (maxM - minM)); valLbl:SetText(FormatTime(val)) end
+        sl.OnValueChanged = function(_, v)
+            if syncing then return end
+            val = math.Round(minM + v * (maxM - minM))
+            UpdateEntryFromVal()
+        end
         sl:SetSlideX(0)
         yOffset = yOffset + ATScale(26)
     end
 
     local btnApply = CreatePrimaryButton(m, hasSlider and "Выбрать" or ("Выбрать " .. FormatTime(minM)), function()
+        if hasSlider and IsValid(entry) then
+            local raw = string.Trim(entry:GetValue() or "")
+            local cur = ParseTimeString(raw)
+            if not cur then
+                inputValid = false
+                errorFlash = 1
+                surface.PlaySound("buttons/button10.wav")
+                notification.AddLegacy("Неверный формат времени. Используйте: 10mi, 1h, 2d, 1w, 1mo", 1, 3)
+                return
+            end
+            val = ClampVal(cur)
+        end
         SelectReasonWithOption(reason, { label = FormatTime(val), minutes = val, perma = false }, tData); m:Close()
     end)
     btnApply:SetSize(w - ATScale(28), ATScale(30)); btnApply:SetPos(ATScale(14), yOffset)
@@ -1979,6 +2192,7 @@ local function OpenPunishmentMenu(target)
     m:MakePopup()
 
     m.Think = function(s)
+        if IsValid(entry) and entry:HasFocus() then return end
         if input.IsMouseDown(MOUSE_LEFT) or input.IsMouseDown(MOUSE_RIGHT) then
             local cx, cy = s:CursorPos()
             if cx < 0 or cy < 0 or cx > w or cy > s:GetTall() then s:Close() end
@@ -2055,6 +2269,22 @@ local function OpenPunishmentMenu(target)
         focusState = focusState or {}; content:Clear()
         local tData, searchValue = PUNISH_CONFIG.types[state.typeIdx], tostring(state.searchQueries[state.typeIdx] or "")
         local scroll = content:Add("DScrollPanel"); scroll:Dock(FILL); StyleScrollbar(scroll)
+
+        local activeMult = GetPunishMultiplier()
+        if activeMult > 1 and tData.t ~= "perma" then
+            local multCard = CreateCard(scroll, ATScale(64), ATScale(20))
+            multCard.Paint = function(_, w, h)
+                if AT.rndx then
+                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, ColorAlpha(THEME.gold, 28))
+                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.gold, 2)
+                else
+                    PaintSubPanel(0, 0, w, h, ATScale(14))
+                end
+                SafeSimpleText("Активен множитель наказания ×" .. activeMult, "AT.Bold.22", ATScale(16), ATScale(10), THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                SafeSimpleText("Все выдаваемые наказания умножаются на " .. activeMult .. ". Изменить можно в настройках.", "AT.Light.16", ATScale(16), ATScale(36), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            end
+        end
+
         CreateSectionLabel(scroll, "Быстрые действия")
         local quickWrap = scroll:Add("DPanel"); quickWrap:Dock(TOP); quickWrap:SetTall(ATScale(72)); quickWrap:DockMargin(0, 0, 0, ATScale(22)); quickWrap.Paint = nil
 
@@ -2083,7 +2313,8 @@ local function OpenPunishmentMenu(target)
         if tData.t ~= "perma" then
             local durationData = GetSelectedDurationData(tData)
             CreateSectionLabel(scroll, "Автоматическое время наказания")
-            local info = CreateCard(scroll, durationData.valid and ATScale(92) or ATScale(116), ATScale(18))
+            local extraTall = durationData.multiplier > 1 and ATScale(22) or 0
+            local info = CreateCard(scroll, (durationData.valid and ATScale(92) or ATScale(116)) + extraTall, ATScale(18))
             info.Paint = function(_, w, h)
                 PaintSubPanel(0, 0, w, h, ATScale(14))
                 if table.Count(state.reasons) <= 0 then SafeSimpleText("Выбери правило, чтобы время посчиталось автоматически", "AT.Bold.20", ATScale(16), h * 0.5, color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER); return end
@@ -2095,6 +2326,9 @@ local function OpenPunishmentMenu(target)
                 local limitText = IsBanType(tData.t) and ("Лимит ранга: " .. FormatLimitText(GetLocalBanLimitMinutes())) or "Время берется из выбранных правил"
                 SafeSimpleText("Итоговое время: " .. durationData.text, "AT.Bold.22", ATScale(16), ATScale(14), durationData.hasPerma and THEME.red or THEME.green, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
                 SafeSimpleText(limitText, "AT.Light.16", ATScale(16), ATScale(48), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                if durationData.multiplier > 1 and not durationData.hasPerma then
+                    SafeSimpleText("Активен множитель ×" .. durationData.multiplier .. " (база: " .. FormatTime(durationData.baseTotal) .. ")", "AT.Light.16", ATScale(16), ATScale(70), THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                end
             end
             if #durationData.details > 0 then
                 local details = CreateCard(scroll, math.max(ATScale(74), ATScale(26 + #durationData.details * 22)), ATScale(18))
@@ -3292,7 +3526,8 @@ if AT.activeCatIndex == 2 then
                 PaintSubPanel(0, 0, w, h, ATScale(14))
                 local locked, desc = v.adminOnly and not HasToolAccess(LocalPlayer()), v.desc
                 if v.cmd == "Авто-реклама" then desc = "Автоматически отправляет 4 сообщения каждые " .. math.Clamp(tonumber(AT.autoAdvertCooldownMinutes) or 10, 10, 60) .. " мин"
-                elseif v.cmd == "Клавиша открытия меню" then desc = "Текущая клавиша: " .. GetMenuBindName() end
+                elseif v.cmd == "Клавиша открытия меню" then desc = "Текущая клавиша: " .. GetMenuBindName()
+                elseif v.cmd == "Множитель наказания" then local mult = GetPunishMultiplier(); desc = mult == 1 and "Множитель выключен (×1)" or ("Активен множитель ×" .. mult .. " — все наказания умножаются") end
                 SafeSimpleText(v.cmd, "AT.Bold.22", ATScale(16), ATScale(12), locked and Color(100, 100, 100) or color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
                 SafeSimpleText(desc, "AT.Light.16", ATScale(16), ATScale(42), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
                 if locked then SafeSimpleText("Только для администрации", "AT.Light.16", w - ATScale(110), h * 0.5, Color(120, 120, 120), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER) end
@@ -3307,6 +3542,7 @@ if AT.activeCatIndex == 2 then
                 settingsBtn:SetSize(ATScale(40), ATScale(40))
             end
             if v.cmd == "Клавиша открытия меню" then actionBtn = CreateActionButton(it, "Изменить", ATScale(132), ATScale(40), OpenMenuBindSettings) end
+            if v.cmd == "Множитель наказания" then actionBtn = CreateActionButton(it, "Изменить", ATScale(132), ATScale(40), OpenPunishMultiplierSettings) end
 
             local locked = v.adminOnly and not HasToolAccess(LocalPlayer())
             if v.isToggle then
@@ -3911,7 +4147,7 @@ local function ResetAllSettings(ply)
 
     local cookies_to_delete = {
         "AT_Watermark", "AT_ESP", "AT_Interact", "AT_AutoAdvert", "AT_AutoAdvertCooldownMinutes",
-        "AT_MenuBind", "AT_WatermarkRelX", "AT_WatermarkRelY",
+        "AT_MenuBind", "AT_WatermarkRelX", "AT_WatermarkRelY", "AT_PunishMultiplier",
         "AT_THEME_GREEN_r", "AT_THEME_GREEN_g", "AT_THEME_GREEN_b",
         "AT_THEME_GOLD_r", "AT_THEME_GOLD_g", "AT_THEME_GOLD_b"
     }
@@ -3924,6 +4160,7 @@ local function ResetAllSettings(ply)
     AT.showAutoAdvert = false
     AT.autoAdvertCooldownMinutes = 10
     AT.MenuKey = AT.DEFAULT_MENU_KEY
+    AT.punishMultiplier = 1
     
     THEME.green = Color(Config.THEME_DEFAULT_GREEN.r, Config.THEME_DEFAULT_GREEN.g, Config.THEME_DEFAULT_GREEN.b)
     THEME.gold = Color(Config.THEME_DEFAULT_GOLD.r, Config.THEME_DEFAULT_GOLD.g, Config.THEME_DEFAULT_GOLD.b)
