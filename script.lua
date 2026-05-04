@@ -286,7 +286,7 @@ local DATA = {
     { name = "Список администрации" },
     { name = "Игроки в AFK" },
     { name = "Логи пропов" },
-    { name = "Админ-статистика AFK" },
+    { name = "Статистика" },
     {
         name = "Настройки",
         items = {
@@ -1187,6 +1187,1098 @@ local function AFK_GetCurrentAFKTime()
     if AFKStats.state ~= "AFK" then return 0 end
     return CurTime() - AFKStats.afkSince
 end
+
+local RB = {
+    topData          = nil,
+    topLoadedAt      = 0,
+    topPage          = 0,
+    TOP_TTL          = 60,
+
+    searchCache      = {},
+    SEARCH_TTL       = 30,
+
+    pendingTop       = nil,
+    pendingLoadMore  = nil,
+    pendingSearch    = nil,
+
+    canSendTopAt     = 0,
+    canSendLoadAt    = 0,
+    canSendSearchAt  = 0,
+
+    selfRecord       = nil,
+    selfLoadedAt     = 0,
+    SELF_TTL         = 60,
+    selfPending      = nil,
+
+    initialised      = false
+}
+
+local function RB_RankName(rank)
+    if not rank or rank == "" then return "—" end
+    if freports and freports.config and freports.config.BRanks and freports.config.BRanks[rank] then
+        return freports.config.BRanks[rank][1] or rank
+    end
+    return rank
+end
+
+local function RB_RankColor(rank)
+    if rank and freports and freports.config and freports.config.BRanks and freports.config.BRanks[rank] then
+        return freports.config.BRanks[rank][2] or color_white
+    end
+    return color_white
+end
+
+local function RB_IsStaff(rank)
+    if not rank then return false end
+    if freports and freports.config and freports.config.WhoCanReceiveReports then
+        return freports.config.WhoCanReceiveReports[rank] == true
+    end
+    return true
+end
+
+local function RB_ParseDaily(jsonStr)
+    if type(jsonStr) ~= "string" or jsonStr == "" then return {} end
+    local ok, t = pcall(util.JSONToTable, jsonStr)
+    if ok and istable(t) then return t end
+    return {}
+end
+
+local function RB_MonthArray(dailyTbl)
+    local out = {}
+    if not istable(dailyTbl) then dailyTbl = {} end
+
+    local now = os.date("*t", os.time())
+    local nextMonth = { year = now.year, month = now.month + 1, day = 0, hour = 12, min = 0, sec = 0 }
+    if nextMonth.month > 12 then nextMonth.month = nextMonth.month - 12; nextMonth.year = nextMonth.year + 1 end
+    local daysInMonth = os.date("*t", os.time(nextMonth)).day
+
+    for d = 1, daysInMonth do
+        local v = tonumber(dailyTbl[tostring(d)] or dailyTbl[d]) or 0
+        table.insert(out, {
+            day      = d,
+            value    = v,
+            isToday  = (d == now.day),
+            isFuture = (d > now.day)
+        })
+    end
+    return out
+end
+
+local function RB_DailySum(dailyTbl)
+    local s = 0
+    for _, v in pairs(dailyTbl or {}) do s = s + (tonumber(v) or 0) end
+    return s
+end
+
+local function RB_WeekSum(dailyTbl)
+    local now = os.date("*t")
+    local s = 0
+    for d = math.max(1, now.day - 6), now.day do
+        s = s + (tonumber(dailyTbl[tostring(d)] or dailyTbl[d]) or 0)
+    end
+    return s
+end
+
+local function RB_FormatCount(n)
+    n = tonumber(n) or 0
+    return tostring(math.floor(n))
+end
+
+net.Receive("freports.reports_statistics", function()
+    local data = net.ReadTable() or {}
+    RB.topData = data
+    RB.topLoadedAt = CurTime()
+    RB.topPage = 0
+    if RB.pendingTop then
+        local cb = RB.pendingTop; RB.pendingTop = nil
+        cb(data)
+    end
+end)
+
+net.Receive("freports.reports_statistics.load_more", function()
+    local data = net.ReadTable() or {}
+    if RB.pendingLoadMore then
+        local p = RB.pendingLoadMore; RB.pendingLoadMore = nil
+        if RB.topData then
+            local existing = {}
+            for _, row in ipairs(RB.topData) do existing[row.steamid] = true end
+            for _, row in ipairs(data) do
+                if not existing[row.steamid] then
+                    table.insert(RB.topData, row)
+                end
+            end
+        else
+            RB.topData = data
+        end
+        RB.topPage = math.max(RB.topPage, p.page)
+        if p.callback then p.callback(data, RB.topData) end
+    end
+end)
+
+net.Receive("freports.reports_statistics.search", function()
+    local data = net.ReadTable() or {}
+    if RB.pendingSearch then
+        local p = RB.pendingSearch; RB.pendingSearch = nil
+        RB.searchCache[p.key] = { data = data, loadedAt = CurTime() }
+        if p.callback then p.callback(data) end
+    end
+    if RB.selfPending then
+        local cb = RB.selfPending; RB.selfPending = nil
+        local row = (data and data[1]) or false
+        RB.selfRecord = row
+        RB.selfLoadedAt = CurTime()
+        cb(row)
+    end
+end)
+
+function RB.GetTop(callback, force)
+    if not force and RB.topData and (CurTime() - RB.topLoadedAt) < RB.TOP_TTL then
+        if callback then callback(RB.topData) end
+        return
+    end
+    if CurTime() < RB.canSendTopAt then
+        if callback then callback(RB.topData or {}) end
+        return
+    end
+    RB.canSendTopAt = CurTime() + 1.2
+    RB.pendingTop = callback
+    RunConsoleCommand(freports and freports.config and freports.config.reps_stats_cmd or "reps_stats")
+end
+
+function RB.LoadMore(callback)
+    if CurTime() < RB.canSendLoadAt then return end
+    RB.canSendLoadAt = CurTime() + 1.2
+    local nextPage = (RB.topPage or 0) + 1
+    RB.pendingLoadMore = { page = nextPage, callback = callback }
+    net.Start("freports.reports_statistics.load_more")
+        net.WriteInt(nextPage, 32)
+    net.SendToServer()
+end
+
+function RB.SearchBy(stype, query, callback)
+    if not query or query == "" then if callback then callback({}) end return end
+    local key = stype .. ":" .. string.lower(query)
+    local c = RB.searchCache[key]
+    if c and (CurTime() - c.loadedAt) < RB.SEARCH_TTL then
+        if callback then callback(c.data) end
+        return
+    end
+    if CurTime() < RB.canSendSearchAt then
+        if callback then callback((c and c.data) or {}) end
+        return
+    end
+    RB.canSendSearchAt = CurTime() + 1.2
+    RB.pendingSearch = { key = key, callback = callback }
+    net.Start("freports.reports_statistics.search")
+        net.WriteInt(stype, 32)
+        net.WriteString(query)
+    net.SendToServer()
+end
+
+function RB.GetMyRecord(callback, force)
+    if not force and RB.selfRecord ~= nil and (CurTime() - RB.selfLoadedAt) < RB.SELF_TTL then
+        if callback then callback(RB.selfRecord) end
+        return
+    end
+    local sid = GetLocalSteamID()
+    if not sid then if callback then callback(false) end return end
+    if CurTime() < RB.canSendSearchAt then
+        if callback then callback(RB.selfRecord or false) end
+        return
+    end
+    RB.canSendSearchAt = CurTime() + 1.2
+    RB.selfPending = callback
+    net.Start("freports.reports_statistics.search")
+        net.WriteInt(1, 32)
+        net.WriteString(sid)
+    net.SendToServer()
+end
+
+function RB.GetAFKByID64(steamid64, callback)
+    if not steamid64 or steamid64 == "" then if callback then callback(nil) end return end
+    local sid = util.SteamIDFrom64(tostring(steamid64)) or tostring(steamid64)
+    http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. sid,
+        function(body)
+            local ok, parsed = pcall(util.JSONToTable, body or "")
+            if ok and parsed and parsed.ok and parsed.data and parsed.data.days then
+                callback(parsed.data.days)
+            else
+                callback(nil)
+            end
+        end,
+        function() callback(nil) end
+    )
+end
+
+_G.AT_RB = RB
+_G.AT_RB_RankName  = RB_RankName
+_G.AT_RB_RankColor = RB_RankColor
+_G.AT_RB_IsStaff   = RB_IsStaff
+_G.AT_RB_ParseDaily = RB_ParseDaily
+_G.AT_RB_MonthArray = RB_MonthArray
+_G.AT_RB_DailySum   = RB_DailySum
+_G.AT_RB_FormatCount = RB_FormatCount
+
+local STATS_TAB = {
+    active   = "me",   -- "me" | "top"
+}
+
+local function MakeBarChart(parent, h, paddings, getData, formatVal, colorFn)
+    local card = parent:Add("DPanel")
+    card:Dock(TOP); card:SetTall(h); card:DockMargin(0, 0, 0, ATScale(16))
+    card:SetMouseInputEnabled(true)
+    card.hoveredBar = -1
+    card.Paint = function(s, w, hh)
+        if not AT.rndx then return end
+        AT.rndx.Draw(ATScale(14), 0, 0, w, hh, THEME.subBg)
+        AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, hh, THEME.subBorder, 1)
+
+        local data = getData() or {}
+        local maxV = 1
+        for _, d in ipairs(data) do
+            if (d.value or 0) > maxV then maxV = d.value end
+        end
+
+        local padX     = paddings.padX     or ATScale(24)
+        local padTop   = paddings.padTop   or ATScale(20)
+        local padBot   = paddings.padBot   or ATScale(44)
+        local cW = math.max(w - padX * 2, 1)
+        local cH = math.max(hh - padTop - padBot, 1)
+        local n = #data
+        if n <= 0 then
+            SafeSimpleText("Нет данных", "AT.Bold.18", w * 0.5, hh * 0.5, THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            return
+        end
+
+        local gap = ATScale(n > 14 and 4 or (n > 10 and 6 or 10))
+        local barW = math.max(2, (cW - gap * (n - 1)) / n)
+
+        for gi = 0, 3 do
+            AT.rndx.Draw(256, padX, padTop + cH * (gi / 3), cW, 1, Color(255, 255, 255, 10))
+        end
+
+        local mx, my = s:LocalCursorPos()
+        s.hoveredBar = -1
+
+        for i, d in ipairs(data) do
+            local bx = padX + (i - 1) * (barW + gap)
+            local frac = (d.value or 0) / maxV
+            local bh = math.max(ATScale(2), cH * frac)
+            local by = padTop + cH - bh
+
+            local col
+            if d.isFuture then
+                col = Color(40, 40, 46)
+            elseif d.isToday then
+                col = THEME.gold
+            elseif (d.value or 0) == 0 then
+                col = Color(58, 58, 66)
+            else
+                col = colorFn and colorFn(d, frac) or THEME.green
+            end
+
+            if mx >= bx and mx <= bx + barW and my >= padTop and my <= padTop + cH then
+                s.hoveredBar = i
+                col = Color(math.Clamp(col.r + 35, 0, 255), math.Clamp(col.g + 35, 0, 255), math.Clamp(col.b + 35, 0, 255))
+            end
+
+            AT.rndx.Draw(ATScale(5), bx, by, barW, bh, col)
+
+            if (d.value or 0) > 0 and barW >= ATScale(18) then
+                SafeSimpleText(formatVal(d.value), "AT.Light.13", bx + barW * 0.5, by - ATScale(3), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM)
+            end
+
+            if barW >= ATScale(14) then
+                local labelCol = d.isToday and THEME.gold or color_white
+                SafeSimpleText(d.label or "", "AT.Bold.14", bx + barW * 0.5, padTop + cH + ATScale(8), labelCol, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                if d.sub then
+                    SafeSimpleText(d.sub, "AT.Light.13", bx + barW * 0.5, padTop + cH + ATScale(24), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+                end
+            end
+        end
+
+        if s.hoveredBar > 0 then
+            local d = data[s.hoveredBar]
+            local tip = (d.label or "") .. (d.sub and (" · " .. d.sub) or "") .. "  ·  " .. (formatVal(d.value or 0))
+            surface.SetFont("AT.Bold.14")
+            local tw = surface.GetTextSize(tip) + ATScale(20)
+            local th = ATScale(24)
+            local tx = math.Clamp(mx - tw * 0.5, ATScale(4), w - tw - ATScale(4))
+            local ty = my - th - ATScale(8)
+            if ty < ATScale(4) then ty = my + ATScale(14) end
+            AT.rndx.Draw(ATScale(6), tx, ty, tw, th, Color(8, 8, 10, 245))
+            AT.rndx.DrawOutlined(ATScale(6), tx, ty, tw, th, THEME.gold, 1)
+            SafeSimpleText(tip, "AT.Bold.14", tx + tw * 0.5, ty + th * 0.5, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+    end
+    return card
+end
+
+local function MakeMetricCard(parent, label, valueGetter, accentCol)
+    local c = parent:Add("DPanel")
+    c.Paint = function(_, w, h)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(12), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, ColorAlpha(accentCol, 60), 1)
+            AT.rndx.Draw(ATScale(12), 0, 0, w, ATScale(3), accentCol)
+        end
+        SafeSimpleText(label, "AT.Bold.13", w * 0.5, ATScale(14), accentCol, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        local val = valueGetter()
+        SafeSimpleText(val, "AT.Bold.24", w * 0.5, h * 0.5 + ATScale(8), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    return c
+end
+
+local function MakeMetricRow(parent, metrics, height)
+    local row = parent:Add("DPanel")
+    row:Dock(TOP); row:SetTall(height or ATScale(96))
+    row:DockMargin(0, 0, 0, ATScale(14))
+    row.Paint = nil
+    local cards = {}
+    for _, m in ipairs(metrics) do
+        cards[#cards + 1] = MakeMetricCard(row, m[1], m[2], m[3])
+    end
+    row.PerformLayout = function(_, w, h)
+        local n = #cards; if n == 0 then return end
+        local gap = ATScale(10)
+        local cardW = math.floor((w - gap * (n - 1)) / n)
+        for i, c in ipairs(cards) do
+            c:SetPos((i - 1) * (cardW + gap), 0)
+            c:SetSize(i == n and (w - (cardW + gap) * (n - 1)) or cardW, h)
+        end
+    end
+    return row
+end
+
+local function AFKTo7DayBars()
+    local raw = AFK_GetLastNDays(7)
+    local out = {}
+    for _, d in ipairs(raw) do
+        table.insert(out, {
+            label    = d.label,
+            sub      = d.shortDate,
+            value    = d.seconds,
+            isToday  = d.isToday,
+        })
+    end
+    return out
+end
+
+local function AFKExternalTo7DayBars(daysTbl)
+    local raw = AFK_GetExternalLastNDays(daysTbl, 7)
+    local out = {}
+    for _, d in ipairs(raw) do
+        table.insert(out, {
+            label    = d.label,
+            sub      = d.shortDate,
+            value    = d.seconds,
+            isToday  = d.isToday,
+        })
+    end
+    return out
+end
+
+local function ReportsMonthBars(dailyTbl)
+    local rows = RB_MonthArray(dailyTbl)
+    local out = {}
+    for _, d in ipairs(rows) do
+        table.insert(out, {
+            label    = tostring(d.day),
+            sub      = nil,
+            value    = d.value,
+            isToday  = d.isToday,
+            isFuture = d.isFuture
+        })
+    end
+    return out
+end
+
+local function MakeRankBadge(parent, rank)
+    local p = parent:Add("DPanel")
+    p:Dock(TOP); p:SetTall(ATScale(36))
+    p:DockMargin(0, 0, 0, ATScale(10))
+    p.Paint = function(_, w, h)
+        local col = RB_RankColor(rank)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(10), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(10), 0, 0, w, h, ColorAlpha(col, 110), 1)
+            AT.rndx.Draw(ATScale(10), 0, 0, ATScale(4), h, col)
+        end
+        SafeSimpleText("РАНГ", "AT.Bold.12", ATScale(16), h * 0.5, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        SafeSimpleText(RB_RankName(rank), "AT.Bold.18", w - ATScale(16), h * 0.5, col, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+    end
+    return p
+end
+
+local function MakeTabButton(parent, label, isActive, onClick)
+    local b = parent:Add("DButton")
+    b:SetText("")
+    b.Paint = function(s, w, h)
+        if AT.rndx then
+            if isActive() then
+                AT.rndx.Draw(ATScale(10), 0, 0, w, h, ColorAlpha(THEME.green, 30))
+                AT.rndx.DrawOutlined(ATScale(10), 0, 0, w, h, THEME.green, 1)
+                AT.rndx.Draw(ATScale(10), 0, h - ATScale(3), w, ATScale(3), THEME.green)
+            else
+                AT.rndx.Draw(ATScale(10), 0, 0, w, h, THEME.subBg)
+                AT.rndx.DrawOutlined(ATScale(10), 0, 0, w, h, THEME.subBorder, 1)
+                if s:IsHovered() then
+                    PaintHoverFill(0, 0, w, h, THEME.hover, ATScale(10))
+                end
+            end
+        end
+        local col = isActive() and color_white or THEME.textSub
+        SafeSimpleText(label, "AT.Bold.16", w * 0.5, h * 0.5, col, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    b.DoClick = function() PlayClick(); onClick() end
+    return b
+end
+
+local OpenAdminProfileFrame
+
+local function CloseAdminProfile()
+    if IsValid(UI_Frames.AdminProfile) then UI_Frames.AdminProfile:Remove() end
+    UI_Frames.AdminProfile = nil
+end
+
+OpenAdminProfileFrame = function(row)
+    if not row or not row.steamid then return end
+    CloseAdminProfile()
+
+    local fw, fh = ATScale(820), ATScale(640)
+    local frame = vgui.Create("DFrame")
+    UI_Frames.AdminProfile = frame
+    frame:SetSize(fw, fh)
+    frame:Center()
+    frame:SetTitle("")
+    frame:ShowCloseButton(false)
+    frame:SetDraggable(true)
+    frame:SetDeleteOnClose(true)
+    frame:MakePopup()
+
+    frame.Paint = function(_, w, h)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(10, 10, 10, 244))
+            AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
+            AT.rndx.Draw(ATScale(16), 0, 0, w, ATScale(4), THEME.green)
+        end
+    end
+
+    local closeBtn = frame:Add("DButton")
+    closeBtn:SetText("")
+    closeBtn:SetSize(ATScale(32), ATScale(32))
+    closeBtn:SetPos(fw - ATScale(42), ATScale(14))
+    closeBtn.Paint = function(s, w, h)
+        if s:IsHovered() and AT.rndx then
+            AT.rndx.Draw(ATScale(6), 0, 0, w, h, THEME.redHover)
+        end
+        surface.SetDrawColor(s:IsHovered() and color_white or THEME.inactive)
+        surface.SetMaterial(Config.Mats.CLOSE)
+        surface.DrawTexturedRect(ATScale(6), ATScale(6), w - ATScale(12), h - ATScale(12))
+    end
+    closeBtn.DoClick = function() PlayClick(); CloseAdminProfile() end
+
+    local titleLbl = frame:Add("DLabel")
+    titleLbl:SetText("Профиль администратора")
+    titleLbl:SetFont("AT.Bold.24")
+    titleLbl:SetTextColor(color_white)
+    titleLbl:SetPos(ATScale(24), ATScale(18))
+    titleLbl:SizeToContents()
+
+    local sep = frame:Add("DPanel")
+    sep:SetPos(ATScale(20), ATScale(58))
+    sep:SetSize(fw - ATScale(40), 1)
+    sep.Paint = function(_, w, h)
+        surface.SetDrawColor(THEME.subBorder); surface.DrawRect(0, 0, w, h)
+    end
+
+    local scroll = frame:Add("DScrollPanel")
+    scroll:SetPos(ATScale(20), ATScale(72))
+    scroll:SetSize(fw - ATScale(40), fh - ATScale(92))
+    StyleScrollbar(scroll)
+
+    local header = scroll:Add("DPanel")
+    header:Dock(TOP); header:SetTall(ATScale(96))
+    header:DockMargin(0, 0, 0, ATScale(14))
+
+    local steamIDStr = util.SteamIDFrom64(tostring(row.steamid)) or tostring(row.steamid)
+    local rankColRef = RB_RankColor(row.rank)
+
+    header.Paint = function(_, w, h)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, ColorAlpha(rankColRef, 60), 1)
+            AT.rndx.Draw(ATScale(14), 0, 0, ATScale(5), h, rankColRef)
+        end
+        SafeSimpleText(row.name or "Неизвестно", "AT.Bold.26", ATScale(20), ATScale(14), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        SafeSimpleText(steamIDStr, "AT.Light.16", ATScale(20), ATScale(50), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        SafeSimpleText(RB_RankName(row.rank), "AT.Bold.18", ATScale(20), ATScale(72), rankColRef, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+        local lsTxt = "—"
+        if tonumber(row.last_seen) and tonumber(row.last_seen) > 0 then
+            lsTxt = os.date("%d.%m.%Y · %H:%M", tonumber(row.last_seen))
+        end
+        SafeSimpleText("ПОСЛЕДНИЙ ЗАХОД", "AT.Bold.12", w - ATScale(20), ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+        SafeSimpleText(lsTxt, "AT.Bold.18", w - ATScale(20), ATScale(34), color_white, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+
+        local repV = tonumber(row.rep) or 0
+        local repCol = repV > 0 and THEME.green or (repV < 0 and THEME.red or color_white)
+        SafeSimpleText("РЕПУТАЦИЯ", "AT.Bold.12", w - ATScale(20), ATScale(60), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+        SafeSimpleText((repV > 0 and "+" or "") .. tostring(repV), "AT.Bold.22", w - ATScale(20), ATScale(74), repCol, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+    end
+
+    local copyBtn = scroll:Add("DButton")
+    copyBtn:Dock(TOP); copyBtn:SetTall(ATScale(36))
+    copyBtn:DockMargin(0, 0, 0, ATScale(14))
+    copyBtn:SetText("")
+    copyBtn.Paint = function(s, w, h)
+        if AT.rndx then
+            PaintSubPanel(0, 0, w, h, ATScale(10))
+            if s:IsHovered() then PaintHoverFill(0, 0, w, h, THEME.hover, ATScale(10)) end
+        end
+        SafeSimpleText("Скопировать SteamID  ·  " .. steamIDStr, "AT.Bold.14", w * 0.5, h * 0.5, s:IsHovered() and color_white or THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    copyBtn.DoClick = function()
+        SetClipboardText(steamIDStr)
+        PlayClick()
+        notification.AddLegacy("SteamID скопирован", 0, 2)
+    end
+
+    local dailyOnline    = RB_ParseDaily(row.daily_online)
+    local dailyReports   = RB_ParseDaily(row.daily_reports)
+
+    local totalRepsV  = tonumber(row.total_reports) or 0
+    local monthRepsV  = RB_DailySum(dailyReports)
+    local monthOnlineV = RB_DailySum(dailyOnline)
+    local weekRepsV   = RB_WeekSum(dailyReports)
+    local weekOnlineV = RB_WeekSum(dailyOnline)
+    local weekAfkSec  = { value = 0 }
+
+    CreateSectionLabel(scroll, "Статистика за неделю")
+
+    MakeMetricRow(scroll, {
+        { "ЖАЛОБ ЗА НЕДЕЛЮ",  function() return RB_FormatCount(weekRepsV)        end, THEME.green },
+        { "ОНЛАЙН ЗА НЕДЕЛЮ", function() return AFK_FormatHuman(weekOnlineV)     end, Color(120, 191, 255) },
+        { "AFK ЗА НЕДЕЛЮ",    function() return AFK_FormatHuman(weekAfkSec.value) end, Color(200, 140, 255) },
+    }, ATScale(96))
+
+    CreateSectionLabel(scroll, "Жалобы и онлайн")
+
+    MakeMetricRow(scroll, {
+        { "ВСЕГО ЖАЛОБ",      function() return RB_FormatCount(totalRepsV) end, THEME.gold },
+        { "ЗА ЭТОТ МЕСЯЦ",    function() return RB_FormatCount(monthRepsV) end, THEME.green },
+        { "ОНЛАЙН ЗА МЕСЯЦ",  function() return AFK_FormatHuman(monthOnlineV) end, Color(120, 191, 255) }
+    }, ATScale(96))
+
+    CreateSectionLabel(scroll, "Жалобы по дням (текущий месяц)")
+
+    MakeBarChart(scroll, ATScale(220),
+        { padX = ATScale(20), padTop = ATScale(20), padBot = ATScale(34) },
+        function() return ReportsMonthBars(dailyReports) end,
+        function(v) return RB_FormatCount(v) end,
+        function(d, frac)
+            return Color(math.Round(60 + 195 * frac), math.Round(190 - 50 * frac), math.Round(120 - 90 * frac))
+        end
+    )
+
+    CreateSectionLabel(scroll, "AFK-статистика")
+
+    local afkLoadingCard = CreateCard(scroll, ATScale(60), ATScale(14))
+    afkLoadingCard.PaintOver = function(_, w, h)
+        SafeSimpleText("Загрузка AFK-данных...", "AT.Bold.16", w * 0.5, h * 0.5, THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    RB.GetAFKByID64(tostring(row.steamid), function(days)
+        if not IsValid(scroll) or not IsValid(afkLoadingCard) then return end
+        afkLoadingCard:Remove()
+
+        if not days then
+            local nf = CreateCard(scroll, ATScale(60), ATScale(14))
+            nf.PaintOver = function(_, w, h)
+                SafeSimpleText("AFK-данные недоступны (возможно, игрок не использует AdminTool)", "AT.Bold.14", w * 0.5, h * 0.5, THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            end
+            return
+        end
+
+        local tot = AFK_GetExternalTotals(days)
+        weekAfkSec.value = tot.week
+
+        local afkRow = scroll:Add("DPanel")
+        afkRow:Dock(TOP); afkRow:SetTall(ATScale(96))
+        afkRow:DockMargin(0, 0, 0, ATScale(14))
+        afkRow.Paint = nil
+
+        local cards = {
+            MakeMetricCard(afkRow, "СЕГОДНЯ",     function() return AFK_FormatHuman(tot.today)   end, THEME.gold),
+            MakeMetricCard(afkRow, "ЗА НЕДЕЛЮ",   function() return AFK_FormatHuman(tot.week)    end, THEME.green),
+            MakeMetricCard(afkRow, "ЗА МЕСЯЦ",    function() return AFK_FormatHuman(tot.month)   end, Color(120, 191, 255)),
+            MakeMetricCard(afkRow, "ВСЕ ВРЕМЯ",   function() return AFK_FormatHuman(tot.allTime) end, Color(200, 140, 255)),
+        }
+        afkRow.PerformLayout = function(_, w, h)
+            local gap = ATScale(10)
+            local cw = math.floor((w - gap * 3) / 4)
+            for i, c in ipairs(cards) do
+                c:SetPos((i - 1) * (cw + gap), 0)
+                c:SetSize(i == 4 and (w - (cw + gap) * 3) or cw, h)
+            end
+        end
+        afkRow:InvalidateLayout(true)
+
+        local lbl = scroll:Add("DLabel")
+        lbl:SetText("AFK · последние 7 дней")
+        lbl:SetFont("AT.Bold.20"); lbl:SetTextColor(color_white)
+        lbl:Dock(TOP); lbl:DockMargin(0, ATScale(4), 0, ATScale(8)); lbl:SizeToContents()
+
+        MakeBarChart(scroll, ATScale(220),
+            { padX = ATScale(20), padTop = ATScale(20), padBot = ATScale(44) },
+            function() return AFKExternalTo7DayBars(days) end,
+            function(v) return AFK_FormatHuman(v) end,
+            function(d, frac)
+                local t = math.Clamp((d.value or 0) / 14400, 0, 1)
+                return Color(math.Round(80 + 175 * t), math.Round(220 - 170 * t), math.Round(120 - 80 * t))
+            end
+        )
+    end)
+end
+
+local function BuildMyStatsPage(parent)
+    local scroll = parent:Add("DScrollPanel"); scroll:Dock(FILL); StyleScrollbar(scroll)
+
+    local title = scroll:Add("DLabel")
+    title:SetText("Моя статистика")
+    title:SetFont("AT.Bold.30"); title:SetTextColor(color_white)
+    title:Dock(TOP); title:DockMargin(0, 0, 0, ATScale(6)); title:SizeToContents()
+
+    local sub = scroll:Add("DLabel")
+    sub:SetText("AFK-активность и статистика твоей работы как администратора.")
+    sub:SetFont("AT.Light.16"); sub:SetTextColor(THEME.textSub)
+    sub:Dock(TOP); sub:DockMargin(0, 0, 0, ATScale(16)); sub:SizeToContents()
+
+    local hero = CreateCard(scroll, ATScale(140), ATScale(16))
+    hero.Paint = function(_, w, h)
+        if not AT.rndx then return end
+        AT.rndx.Draw(ATScale(16), 0, 0, w, h, THEME.subBg)
+        AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
+        AT.rndx.Draw(ATScale(16), 0, 0, ATScale(5), h, THEME.gold)
+
+        local totals = AFK_GetTotals()
+
+        SafeSimpleText("ВСЕГО ВРЕМЕНИ AFK", "AT.Bold.14", ATScale(24), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        SafeSimpleText(AFK_FormatHuman(totals.allTime), "AT.Bold.36", ATScale(24), ATScale(34), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+        local subLine
+        if totals.dayCount > 0 then
+            subLine = "Среднее в день: " .. AFK_FormatHuman(totals.avgPerDay) .. "  •  Дней отслежено: " .. totals.dayCount
+        else
+            subLine = "Пока нет данных — поиграй немного"
+        end
+        SafeSimpleText(subLine, "AT.Light.16", ATScale(24), h - ATScale(20), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_BOTTOM)
+
+        local stateX = w - ATScale(24)
+        local isAFK = AFKStats.state == "AFK"
+
+        SafeSimpleText("ТЕКУЩИЙ СТАТУС", "AT.Bold.14", stateX, ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+
+        local stateCol, stateText, subReason
+        if isAFK then
+            local pulse = 0.6 + 0.4 * math.sin(RealTime() * 4)
+            stateCol = Color(255, math.Round(120 * pulse + 60), 60)
+            stateText = "AFK"
+            if AFKStats.afkSince > 0 then
+                stateText = "AFK · " .. AFK_FormatHMS(CurTime() - AFKStats.afkSince)
+            end
+            subReason = AFKStats.afkReason ~= "" and ("Причина: " .. AFKStats.afkReason) or nil
+        elseif AFKStats.state == "IDLE" then
+            stateCol = THEME.gold
+            local remain = math.max(0, AFKStats.AFK_THRESHOLD - (CurTime() - AFKStats.idleSince))
+            stateText = "AFK через " .. math.ceil(remain) .. "с"
+        else
+            stateCol = THEME.green
+            stateText = "АКТИВЕН"
+        end
+        SafeSimpleText(stateText, "AT.Bold.28", stateX, ATScale(34), stateCol, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+        if subReason then
+            SafeSimpleText(subReason, "AT.Light.14", stateX, ATScale(68), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+        end
+
+        local pulseA = isAFK and (0.4 + 0.6 * math.abs(math.sin(RealTime() * 3))) or 1
+        AT.rndx.DrawCircle(stateX - ATScale(4), h - ATScale(28), ATScale(10), ColorAlpha(stateCol, math.Round(50 * pulseA)))
+        AT.rndx.DrawCircle(stateX - ATScale(4), h - ATScale(28), ATScale(6), stateCol)
+        SafeSimpleText("Сегодня: " .. AFK_FormatHuman(AFK_GetTotals().today), "AT.Light.16", stateX - ATScale(18), h - ATScale(20), color_white, TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
+    end
+
+    MakeMetricRow(scroll, {
+        { "AFK ЗА ДЕНЬ",    function() return AFK_FormatHuman(AFK_GetTotals().today) end, THEME.gold },
+        { "AFK ЗА НЕДЕЛЮ",  function() return AFK_FormatHuman(AFK_GetTotals().week)  end, THEME.green },
+        { "AFK ЗА МЕСЯЦ",   function() return AFK_FormatHuman(AFK_GetTotals().month) end, Color(120, 191, 255) },
+    }, ATScale(96))
+
+    CreateSectionLabel(scroll, "AFK · последние 7 дней")
+    MakeBarChart(scroll, ATScale(220),
+        { padX = ATScale(24), padTop = ATScale(22), padBot = ATScale(44) },
+        AFKTo7DayBars,
+        function(v) return AFK_FormatHuman(v) end,
+        function(d, frac)
+            local t = math.Clamp((d.value or 0) / 14400, 0, 1)
+            return Color(math.Round(80 + 175 * t), math.Round(220 - 170 * t), math.Round(120 - 80 * t))
+        end
+    )
+
+    local divLbl = scroll:Add("DLabel")
+    divLbl:SetText("Жалобы и онлайн")
+    divLbl:SetFont("AT.Bold.22"); divLbl:SetTextColor(color_white)
+    divLbl:Dock(TOP); divLbl:DockMargin(0, ATScale(8), 0, ATScale(8)); divLbl:SizeToContents()
+
+    local repsBox = scroll:Add("DPanel")
+    repsBox:Dock(TOP); repsBox:SetTall(ATScale(80))
+    repsBox:DockMargin(0, 0, 0, ATScale(14))
+    repsBox.Paint = function(_, w, h)
+        PaintSubPanel(0, 0, w, h, ATScale(14))
+    end
+
+    local repsBoxLbl = repsBox:Add("DLabel")
+    repsBoxLbl:Dock(FILL)
+    repsBoxLbl:SetFont("AT.Bold.16"); repsBoxLbl:SetTextColor(THEME.textSub)
+    repsBoxLbl:SetContentAlignment(5)
+    repsBoxLbl:SetText("Загрузка статистики администратора...")
+
+    RB.GetMyRecord(function(row)
+        if not IsValid(scroll) or not IsValid(repsBox) then return end
+
+        if not row then
+            repsBox:SetTall(ATScale(80))
+            repsBoxLbl:SetText("Ты не входишь в состав администрации, либо данные ещё не созданы на сервере.")
+            return
+        end
+
+        if not RB_IsStaff(row.rank) then
+            repsBox:SetTall(ATScale(80))
+            repsBoxLbl:SetText("Твой текущий ранг (" .. tostring(row.rank or "—") .. ") не имеет статистики жалоб.")
+            return
+        end
+
+        repsBoxLbl:Remove()
+        repsBox:SetTall(0)
+        repsBox:Remove()
+
+        local dailyOnline   = RB_ParseDaily(row.daily_online)
+        local dailyReports  = RB_ParseDaily(row.daily_reports)
+
+        local infoCard = scroll:Add("DPanel")
+        infoCard:Dock(TOP); infoCard:SetTall(ATScale(108))
+        infoCard:DockMargin(0, 0, 0, ATScale(14))
+
+        local rankCol = RB_RankColor(row.rank)
+        infoCard.Paint = function(_, w, h)
+            if AT.rndx then
+                AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
+                AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, ColorAlpha(rankCol, 60), 1)
+                AT.rndx.Draw(ATScale(14), 0, 0, ATScale(5), h, rankCol)
+            end
+            SafeSimpleText("РАНГ", "AT.Bold.12", ATScale(20), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            SafeSimpleText(RB_RankName(row.rank), "AT.Bold.24", ATScale(20), ATScale(34), rankCol, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+            local repV = tonumber(row.rep) or 0
+            local repCol = repV > 0 and THEME.green or (repV < 0 and THEME.red or color_white)
+            SafeSimpleText("РЕПУТАЦИЯ", "AT.Bold.12", w - ATScale(20), ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+            SafeSimpleText((repV > 0 and "+" or "") .. tostring(repV), "AT.Bold.30", w - ATScale(20), ATScale(34), repCol, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
+
+            local lsTxt = "—"
+            if tonumber(row.last_seen) and tonumber(row.last_seen) > 0 then
+                lsTxt = os.date("Последний заход · %d.%m.%Y %H:%M", tonumber(row.last_seen))
+            end
+            SafeSimpleText(lsTxt, "AT.Light.14", ATScale(20), h - ATScale(18), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_BOTTOM)
+            SafeSimpleText("Всего жалоб: " .. RB_FormatCount(row.total_reports), "AT.Bold.16", w - ATScale(20), h - ATScale(18), color_white, TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
+        end
+
+        MakeMetricRow(scroll, {
+            { "ЖАЛОБ ВСЕГО",       function() return RB_FormatCount(row.total_reports) end,   THEME.gold },
+            { "ЖАЛОБ ЗА МЕСЯЦ",    function() return RB_FormatCount(RB_DailySum(dailyReports)) end, THEME.green },
+            { "ОНЛАЙН ЗА МЕСЯЦ",   function() return AFK_FormatHuman(RB_DailySum(dailyOnline)) end, Color(120, 191, 255) }
+        }, ATScale(96))
+
+        CreateSectionLabel(scroll, "Жалобы по дням (текущий месяц)")
+        MakeBarChart(scroll, ATScale(220),
+            { padX = ATScale(20), padTop = ATScale(20), padBot = ATScale(34) },
+            function() return ReportsMonthBars(dailyReports) end,
+            function(v) return RB_FormatCount(v) end,
+            function(d, frac)
+                return Color(math.Round(60 + 195 * frac), math.Round(190 - 50 * frac), math.Round(120 - 90 * frac))
+            end
+        )
+    end)
+end
+
+local function BuildTopAdminsPage(parent)
+    local scroll = parent:Add("DScrollPanel"); scroll:Dock(FILL); StyleScrollbar(scroll)
+
+    local title = scroll:Add("DLabel")
+    title:SetText("Топ администрации")
+    title:SetFont("AT.Bold.30"); title:SetTextColor(color_white)
+    title:Dock(TOP); title:DockMargin(0, 0, 0, ATScale(6)); title:SizeToContents()
+
+    local sub = scroll:Add("DLabel")
+    sub:SetText("Рейтинг администраторов по репутации. Клик по строке — подробный профиль.")
+    sub:SetFont("AT.Light.16"); sub:SetTextColor(THEME.textSub)
+    sub:Dock(TOP); sub:DockMargin(0, 0, 0, ATScale(16)); sub:SizeToContents()
+
+    local searchBox = scroll:Add("DPanel")
+    searchBox:Dock(TOP); searchBox:SetTall(ATScale(72))
+    searchBox:DockMargin(0, 0, 0, ATScale(14))
+    searchBox.Paint = function(_, w, h)
+        PaintSubPanel(0, 0, w, h, ATScale(14))
+        SafeSimpleText("Поиск по имени, SteamID или рангу", "AT.Light.13", ATScale(16), ATScale(10), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    end
+
+    local searchEntry = searchBox:Add("DTextEntry")
+    searchEntry:SetFont("AT.Bold.18")
+    searchEntry:SetTextColor(color_white)
+    searchEntry:SetDrawBackground(false)
+    searchEntry:SetDrawBorder(false)
+    searchEntry:SetCursorColor(color_white)
+    searchEntry:SetHighlightColor(ColorAlpha(THEME.green, 70))
+    searchEntry:SetPlaceholderText("")
+    searchEntry.Paint = function(s, w, h)
+        s:DrawTextEntryText(color_white, THEME.green, color_white)
+        if string.Trim(s:GetValue() or "") == "" and not s:HasFocus() then
+            SafeSimpleText("Например: STEAM_0:1:23456 или \"Иван\"", "AT.Bold.16", 0, h * 0.5, Color(255, 255, 255, 110), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        end
+    end
+
+    local listLbl = scroll:Add("DLabel")
+    listLbl:SetText("Лидеры по репутации")
+    listLbl:SetFont("AT.Bold.20"); listLbl:SetTextColor(color_white)
+    listLbl:Dock(TOP); listLbl:DockMargin(0, ATScale(4), 0, ATScale(8)); listLbl:SizeToContents()
+
+    local listHeader = scroll:Add("DPanel")
+    listHeader:Dock(TOP); listHeader:SetTall(ATScale(34))
+    listHeader:DockMargin(0, 0, 0, ATScale(4))
+    listHeader.Paint = function(_, w, h)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(8), 0, 0, w, h, Color(20, 20, 22))
+            AT.rndx.DrawOutlined(ATScale(8), 0, 0, w, h, THEME.subBorder, 1)
+        end
+        local cols = {
+            { x = ATScale(20),  text = "#",            align = TEXT_ALIGN_LEFT },
+            { x = ATScale(60),  text = "Игрок",        align = TEXT_ALIGN_LEFT },
+            { x = w * 0.50,     text = "Ранг",         align = TEXT_ALIGN_CENTER },
+            { x = w * 0.72,     text = "Жалобы",       align = TEXT_ALIGN_CENTER },
+            { x = w - ATScale(20), text = "Репутация", align = TEXT_ALIGN_RIGHT },
+        }
+        for _, c in ipairs(cols) do
+            SafeSimpleText(c.text, "AT.Bold.13", c.x, h * 0.5, THEME.textSub, c.align, TEXT_ALIGN_CENTER)
+        end
+    end
+
+    local listHost = scroll:Add("DPanel")
+    listHost:Dock(TOP); listHost:DockMargin(0, 0, 0, ATScale(8))
+    listHost:SetTall(ATScale(50))
+    listHost.Paint = nil
+
+    local loadMoreBtn
+    local loadMoreLoading = false
+
+    local isShowingSearch = false
+    local mySID64 = nil
+    do
+        local p = LocalPlayer()
+        if IsValid(p) then mySID64 = p:SteamID64() end
+    end
+
+    local function ClearRows()
+        for _, ch in ipairs(listHost:GetChildren()) do ch:Remove() end
+    end
+
+    local function AddRow(idx, row)
+        if not RB_IsStaff(row.rank) then return false end
+
+        local r = listHost:Add("DButton")
+        r:SetText("")
+        r:Dock(TOP); r:SetTall(ATScale(38)); r:DockMargin(0, 0, 0, ATScale(2))
+
+        local rankCol = RB_RankColor(row.rank)
+        local isMe = mySID64 and tostring(row.steamid) == mySID64
+
+        r.Paint = function(s, w, h)
+            if AT.rndx then
+                local bg = isMe and ColorAlpha(THEME.green, 22) or THEME.subBg
+                AT.rndx.Draw(ATScale(8), 0, 0, w, h, bg)
+                if isMe then
+                    AT.rndx.DrawOutlined(ATScale(8), 0, 0, w, h, THEME.green, 1)
+                else
+                    AT.rndx.DrawOutlined(ATScale(8), 0, 0, w, h, THEME.subBorder, 1)
+                end
+                if s:IsHovered() then
+                    PaintHoverFill(0, 0, w, h, THEME.hover, ATScale(8))
+                end
+                AT.rndx.Draw(ATScale(8), 0, 0, ATScale(3), h, rankCol)
+            end
+
+            local rankBadgeCol = idx == 1 and THEME.gold or (idx == 2 and Color(180, 180, 200) or (idx == 3 and Color(205, 127, 50) or THEME.textSub))
+            SafeSimpleText("#" .. idx, "AT.Bold.16", ATScale(20), h * 0.5, rankBadgeCol, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+            local nameCol = isMe and THEME.green or color_white
+            SafeSimpleText(row.name or "Неизвестно", "AT.Bold.16", ATScale(60), h * 0.5, nameCol, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+            SafeSimpleText(RB_RankName(row.rank), "AT.Bold.14", w * 0.50, h * 0.5, rankCol, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+
+            SafeSimpleText(RB_FormatCount(row.total_reports), "AT.Bold.16", w * 0.72, h * 0.5, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+
+            local repV = tonumber(row.rep) or 0
+            local repCol = repV > 0 and THEME.green or (repV < 0 and THEME.red or color_white)
+            SafeSimpleText((repV > 0 and "+" or "") .. tostring(repV), "AT.Bold.18", w - ATScale(20), h * 0.5, repCol, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        end
+
+        r.DoClick = function()
+            PlayClick()
+            OpenAdminProfileFrame(row)
+        end
+        return true
+    end
+
+    local function RenderRows(rows)
+        ClearRows()
+        if not rows or #rows == 0 then
+            local empty = listHost:Add("DPanel")
+            empty:Dock(TOP); empty:SetTall(ATScale(60))
+            empty.Paint = function(_, w, h)
+                PaintSubPanel(0, 0, w, h, ATScale(10))
+                SafeSimpleText("Ничего не найдено", "AT.Bold.16", w * 0.5, h * 0.5, THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            end
+            listHost:SetTall(ATScale(60))
+            return
+        end
+
+        table.sort(rows, function(a, b)
+            return (tonumber(a.rep) or 0) > (tonumber(b.rep) or 0)
+        end)
+
+        local idx = 0
+        for _, row in ipairs(rows) do
+            if RB_IsStaff(row.rank) then
+                idx = idx + 1
+                AddRow(idx, row)
+            end
+        end
+
+        listHost:SetTall(idx * ATScale(40) + ATScale(4))
+    end
+
+    local function ShowLoading()
+        ClearRows()
+        local ld = listHost:Add("DPanel")
+        ld:Dock(TOP); ld:SetTall(ATScale(60))
+        ld.Paint = function(_, w, h)
+            PaintSubPanel(0, 0, w, h, ATScale(10))
+            SafeSimpleText("Загрузка...", "AT.Bold.16", w * 0.5, h * 0.5, THEME.gold, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+        listHost:SetTall(ATScale(60))
+    end
+
+    local function LoadInitial()
+        isShowingSearch = false
+        ShowLoading()
+        RB.GetTop(function(data)
+            if not IsValid(listHost) then return end
+            RenderRows(data)
+            if IsValid(loadMoreBtn) then loadMoreBtn:SetVisible(true) end
+        end)
+    end
+
+    loadMoreBtn = scroll:Add("DButton")
+    loadMoreBtn:SetText("")
+    loadMoreBtn:Dock(TOP); loadMoreBtn:SetTall(ATScale(40))
+    loadMoreBtn:DockMargin(0, ATScale(4), 0, ATScale(20))
+    loadMoreBtn.Paint = function(s, w, h)
+        if AT.rndx then
+            AT.rndx.Draw(ATScale(10), 0, 0, w, h, THEME.subBg)
+            AT.rndx.DrawOutlined(ATScale(10), 0, 0, w, h, THEME.subBorder, 1)
+            if s:IsHovered() then PaintHoverFill(0, 0, w, h, THEME.hover, ATScale(10)) end
+        end
+        SafeSimpleText(loadMoreLoading and "Загрузка..." or "Загрузить ещё 15", "AT.Bold.16", w * 0.5, h * 0.5, loadMoreLoading and THEME.gold or color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    loadMoreBtn.DoClick = function()
+        if loadMoreLoading or isShowingSearch then return end
+        loadMoreLoading = true
+        PlayClick()
+        RB.LoadMore(function(newData, allData)
+            loadMoreLoading = false
+            if not IsValid(listHost) then return end
+            RenderRows(allData)
+            if newData and #newData == 0 then
+                if IsValid(loadMoreBtn) then loadMoreBtn:SetVisible(false) end
+            end
+        end)
+    end
+
+    local searchCooldown = 0
+    local searchBtn
+
+    local function DoSearch()
+        local q = string.Trim(searchEntry:GetValue() or "")
+        if q == "" then
+            isShowingSearch = false
+            LoadInitial()
+            return
+        end
+        if CurTime() < searchCooldown then return end
+        searchCooldown = CurTime() + 1.5
+        isShowingSearch = true
+        if IsValid(loadMoreBtn) then loadMoreBtn:SetVisible(false) end
+
+        ShowLoading()
+
+        local upper = string.upper(q)
+        local stype, query
+        if string.match(upper, "^STEAM_%d:%d:%d+$") then
+            stype, query = 1, upper
+        elseif string.match(q, "^7656119%d+$") then
+            stype, query = 2, q
+        elseif string.find(string.lower(q), "^[a-z%-_%.]+$") and #q < 32 then
+            stype, query = 3, q
+        else
+            stype, query = 4, q
+        end
+
+        RB.SearchBy(stype, query, function(data)
+            if not IsValid(listHost) then return end
+            if (not data or #data == 0) and stype == 3 then
+                RB.SearchBy(4, query, function(data2)
+                    if not IsValid(listHost) then return end
+                    RenderRows(data2 or {})
+                end)
+            else
+                RenderRows(data or {})
+            end
+        end)
+    end
+
+    searchBtn = CreatePrimaryButton(searchBox, "Найти", DoSearch)
+    searchBtn:SetSize(ATScale(100), ATScale(46))
+
+    searchEntry.OnEnter = function() DoSearch() end
+    searchEntry.OnChange = function(s)
+        if string.Trim(s:GetValue() or "") == "" and isShowingSearch then
+            isShowingSearch = false
+            LoadInitial()
+        end
+    end
+
+    searchBox.PerformLayout = function(_, w, h)
+        local btnW, btnH = searchBtn:GetWide(), searchBtn:GetTall()
+        searchBtn:SetPos(w - btnW - ATScale(10), h * 0.5 - btnH * 0.5)
+        searchEntry:SetPos(ATScale(16), ATScale(32))
+        searchEntry:SetSize(w - btnW - ATScale(32), h - ATScale(40))
+    end
+
+    LoadInitial()
+end
+
+
+_G.AT_BuildMyStatsPage   = BuildMyStatsPage
+_G.AT_BuildTopAdminsPage = BuildTopAdminsPage
+_G.AT_StatsTabState      = STATS_TAB
+_G.AT_MakeTabButton      = MakeTabButton
 
 local function PushPropLog(entry)
     Cache.PROP_LOG_BUFFER[AT.PROP_LOG_NEXT] = entry
@@ -2879,634 +3971,41 @@ if AT.activeCatIndex == 2 then
         listWrap.Think = function() BuildPropLogList(false) end; BuildPropLogList(true)
 
     elseif AT.activeCatIndex == 6 then
-        local scroll = content:Add("DScrollPanel"); scroll:Dock(FILL); StyleScrollbar(scroll)
+        local tabsBar = content:Add("DPanel")
+        tabsBar:Dock(TOP); tabsBar:SetTall(ATScale(46))
+        tabsBar:DockMargin(0, 0, 0, ATScale(14))
+        tabsBar.Paint = nil
 
-        local title = scroll:Add("DLabel")
-        title:SetText("Статистика AFK")
-        title:SetFont("AT.Bold.30"); title:SetTextColor(color_white)
-        title:Dock(TOP); title:DockMargin(0, 0, 0, ATScale(6)); title:SizeToContents()
+        local pageHost = content:Add("DPanel")
+        pageHost:Dock(FILL); pageHost.Paint = nil
 
-        local sub = scroll:Add("DLabel")
-        sub:SetText("Личная хроника вашего времени в режиме AFK.")
-        sub:SetFont("AT.Light.16"); sub:SetTextColor(THEME.textSub)
-        sub:Dock(TOP); sub:DockMargin(0, 0, 0, ATScale(16)); sub:SizeToContents()
+        local btnMe, btnTop
 
-        local hero = CreateCard(scroll, ATScale(140), ATScale(16))
-        hero.Paint = function(_, w, h)
-            if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(16), 0, 0, w, h, THEME.subBg)
-            AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
-
-            AT.rndx.Draw(ATScale(16), 0, 0, ATScale(5), h, THEME.gold)
-
-            local totals = AFK_GetTotals()
-
-            SafeSimpleText("ВСЕГО ВРЕМЕНИ AFK", "AT.Bold.14", ATScale(24), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-            SafeSimpleText(AFK_FormatHuman(totals.allTime), "AT.Bold.36", ATScale(24), ATScale(34), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-
-            local subLine
-            if totals.dayCount > 0 then
-                subLine = "Средне в день: " .. AFK_FormatHuman(totals.avgPerDay) .. "  •  Отслежено дней: " .. totals.dayCount
+        local function RebuildPage()
+            pageHost:Clear()
+            if _G.AT_StatsTabState.active == "me" then
+                _G.AT_BuildMyStatsPage(pageHost)
             else
-                subLine = "Пока нет данных — поиграй немного"
-            end
-            SafeSimpleText(subLine, "AT.Light.16", ATScale(24), h - ATScale(20), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_BOTTOM)
-
-            local stateX = w - ATScale(24)
-            local isAFK = AFKStats.state == "AFK"
-
-            SafeSimpleText("ТЕКУЩИЙ СТАТУС", "AT.Bold.14", stateX, ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
-
-            local stateCol, stateText, subReason
-            if isAFK then
-                local pulse = 0.6 + 0.4 * math.sin(RealTime() * 4)
-                stateCol = Color(255, math.Round(120 * pulse + 60), 60)
-                stateText = "AFK • " .. AFK_FormatHMS(AFK_GetCurrentAFKTime())
-                subReason = AFKStats.afkReason ~= "" and ("Причина: " .. AFKStats.afkReason) or nil
-            elseif AFKStats.state == "IDLE" then
-                stateCol = THEME.gold
-                local remain = math.max(0, AFKStats.AFK_THRESHOLD - (CurTime() - AFKStats.idleSince))
-                stateText = "AFK через " .. math.ceil(remain) .. "с"
-                subReason = AFKStats.afkReason ~= "" and ("Причина: " .. AFKStats.afkReason) or nil
-            else
-                stateCol = THEME.green
-                stateText = "АКТИВЕН"
-                subReason = nil
-            end
-            SafeSimpleText(stateText, "AT.Bold.28", stateX, ATScale(34), stateCol, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
-            if subReason then
-                SafeSimpleText(subReason, "AT.Light.14", stateX, ATScale(68), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
-            end
-
-            local pulseA = isAFK and (0.4 + 0.6 * math.abs(math.sin(RealTime() * 3))) or 1
-            AT.rndx.DrawCircle(stateX - ATScale(4), h - ATScale(28), ATScale(10), ColorAlpha(stateCol, math.Round(50 * pulseA)))
-            AT.rndx.DrawCircle(stateX - ATScale(4), h - ATScale(28), ATScale(6), stateCol)
-            SafeSimpleText("Сегодня: " .. AFK_FormatHuman(totals.today), "AT.Light.16", stateX - ATScale(18), h - ATScale(20), color_white, TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
-        end
-
-        local chartLabel = scroll:Add("DLabel")
-        chartLabel:SetText("Последние 7 дней")
-        chartLabel:SetFont("AT.Bold.22"); chartLabel:SetTextColor(color_white)
-        chartLabel:Dock(TOP); chartLabel:DockMargin(0, ATScale(4), 0, ATScale(8)); chartLabel:SizeToContents()
-
-        local chart = CreateCard(scroll, ATScale(220), ATScale(16))
-        chart:SetMouseInputEnabled(true)
-        chart.hoveredBar = -1
-        chart.OnCursorEntered = function() end
-
-        chart.Paint = function(s, w, h)
-            if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
-            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
-
-            local data = AFK_GetLastNDays(7)
-            local maxSec = 1
-            for _, d in ipairs(data) do if d.seconds > maxSec then maxSec = d.seconds end end
-
-            local padX, padTop, padBottom = ATScale(24), ATScale(22), ATScale(42)
-            local chartW = w - padX * 2
-            local chartH = h - padTop - padBottom
-            local barCount = #data
-            local gap = ATScale(12)
-            local barW = (chartW - gap * (barCount - 1)) / barCount
-
-            for i = 0, 3 do
-                local y = padTop + chartH * (i / 3)
-                AT.rndx.Draw(256, padX, y, chartW, 1, Color(255, 255, 255, 10))
-            end
-
-            local mx, my = s:LocalCursorPos()
-            local newHovered = -1
-
-            for i, d in ipairs(data) do
-                local bx = padX + (i - 1) * (barW + gap)
-                local frac = d.seconds / maxSec
-                local bh = math.max(ATScale(2), chartH * frac)
-                local by = padTop + chartH - bh
-
-                local col
-                if d.isToday then
-                    col = THEME.gold
-                elseif d.seconds == 0 then
-                    col = Color(60, 60, 70)
-                else
-                    local t = math.Clamp(d.seconds / 14400, 0, 1)
-                    col = Color(math.Round(80 + 175 * t), math.Round(220 - 170 * t), math.Round(120 - 80 * t))
-                end
-
-                if mx >= bx and mx <= bx + barW and my >= padTop and my <= padTop + chartH then
-                    newHovered = i
-                    col = Color(math.Clamp(col.r + 40, 0, 255), math.Clamp(col.g + 40, 0, 255), math.Clamp(col.b + 40, 0, 255))
-                end
-
-                AT.rndx.Draw(ATScale(6), bx, by, barW, bh, col)
-
-                if d.seconds > 0 then
-                    SafeSimpleText(AFK_FormatHuman(d.seconds), "AT.Light.14", bx + barW * 0.5, by - ATScale(4), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM)
-                end
-
-                local labelCol = d.isToday and THEME.gold or color_white
-                SafeSimpleText(d.label, "AT.Bold.16", bx + barW * 0.5, padTop + chartH + ATScale(8), labelCol, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                SafeSimpleText(d.shortDate, "AT.Light.14", bx + barW * 0.5, padTop + chartH + ATScale(26), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-            end
-
-            s.hoveredBar = newHovered
-        end
-
-        local hmLabel = scroll:Add("DLabel")
-        hmLabel:SetText("Тепловая карта: 30 дней")
-        hmLabel:SetFont("AT.Bold.22"); hmLabel:SetTextColor(color_white)
-        hmLabel:Dock(TOP); hmLabel:DockMargin(0, ATScale(6), 0, ATScale(8)); hmLabel:SizeToContents()
-
-        local heat = CreateCard(scroll, ATScale(180), ATScale(16))
-        heat.Paint = function(s, w, h)
-            if not AT.rndx then return end
-            AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
-            AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
-
-            local data = AFK_GetLastNDays(30)
-            local maxSec = 1
-            for _, d in ipairs(data) do if d.seconds > maxSec then maxSec = d.seconds end end
-
-            local cols, rows = 15, 2
-            local padX, padY = ATScale(20), ATScale(22)
-            local cellGap = ATScale(6)
-            local availW = math.max(w - padX * 2, 1)
-            local cellSz = math.max(ATScale(10), math.min(math.floor((availW - (cols - 1) * cellGap) / cols), ATScale(40)))
-            local gridW = cols * cellSz + (cols - 1) * cellGap
-            local startX = (w - gridW) * 0.5
-            local startY = padY
-
-            local mx, my = s:LocalCursorPos()
-            local hoveredIdx = -1
-
-            for i, d in ipairs(data) do
-                local row = math.floor((i - 1) / cols)
-                local col = (i - 1) % cols
-                local cx = startX + col * (cellSz + cellGap)
-                local cy = startY + row * (cellSz + cellGap)
-
-                local frac = d.seconds / maxSec
-                local cellCol
-                if d.seconds == 0 then
-                    cellCol = Color(38, 38, 44)
-                else
-                    local t = math.Clamp(frac, 0.15, 1.0)
-                    cellCol = Color(math.Round(80 + 175 * t), math.Round(100 - 60 * t), math.Round(220 - 180 * t))
-                end
-                if d.isToday then
-                    AT.rndx.DrawOutlined(ATScale(6), cx - 2, cy - 2, cellSz + 4, cellSz + 4, THEME.gold, 2)
-                end
-                AT.rndx.Draw(ATScale(6), cx, cy, cellSz, cellSz, cellCol)
-
-                if mx >= cx and mx <= cx + cellSz and my >= cy and my <= cy + cellSz then
-                    hoveredIdx = i
-                end
-            end
-
-            local legX = startX
-            local legY = startY + rows * cellSz + (rows - 1) * cellGap + ATScale(18)
-            if legY + ATScale(12) <= h - ATScale(4) then
-                SafeSimpleText("меньше", "AT.Light.14", legX, legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-                for step = 0, 4 do
-                    local t = step / 4
-                    local c = t == 0 and Color(38, 38, 44) or Color(math.Round(80 + 175 * t), math.Round(100 - 60 * t), math.Round(220 - 180 * t))
-                    AT.rndx.Draw(ATScale(4), legX + ATScale(56) + step * ATScale(18), legY, ATScale(14), ATScale(14), c)
-                end
-                SafeSimpleText("больше", "AT.Light.14", legX + ATScale(160), legY, THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-            end
-
-            if hoveredIdx > 0 then
-                local d = data[hoveredIdx]
-                local tipTxt = d.shortDate .. "  •  " .. (d.seconds > 0 and AFK_FormatHuman(d.seconds) or "нет AFK")
-                surface.SetFont("AT.Bold.16")
-                local tipW = surface.GetTextSize(tipTxt) + ATScale(20)
-                local tipH = ATScale(26)
-                local tipX = math.Clamp(mx - tipW * 0.5, ATScale(4), w - tipW - ATScale(4))
-                local tipY = my - tipH - ATScale(8)
-                if tipY < ATScale(4) then tipY = my + ATScale(16) end
-                AT.rndx.Draw(ATScale(6), tipX, tipY, tipW, tipH, Color(8, 8, 10, 245))
-                AT.rndx.DrawOutlined(ATScale(6), tipX, tipY, tipW, tipH, THEME.gold, 1)
-                SafeSimpleText(tipTxt, "AT.Bold.16", tipX + tipW * 0.5, tipY + tipH * 0.5, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                _G.AT_BuildTopAdminsPage(pageHost)
             end
         end
 
-        local summaryWrap = scroll:Add("DPanel"); summaryWrap:Dock(TOP); summaryWrap:SetTall(ATScale(104))
-        summaryWrap:DockMargin(0, ATScale(10), 0, ATScale(16)); summaryWrap.Paint = nil
+        btnMe  = _G.AT_MakeTabButton(tabsBar, "Моя статистика",
+            function() return _G.AT_StatsTabState.active == "me" end,
+            function() _G.AT_StatsTabState.active = "me"; RebuildPage() end)
 
-        local function makeSummary(parent, title, getSec, color)
-            local card = parent:Add("DPanel")
-            card.Paint = function(_, w, h)
-                if not AT.rndx then return end
-                AT.rndx.Draw(ATScale(12), 0, 0, w, h, THEME.subBg)
-                AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, THEME.subBorder, 1)
-                AT.rndx.Draw(ATScale(12), 0, 0, ATScale(4), h, color)
+        btnTop = _G.AT_MakeTabButton(tabsBar, "Топ администрации",
+            function() return _G.AT_StatsTabState.active == "top" end,
+            function() _G.AT_StatsTabState.active = "top"; RebuildPage() end)
 
-                SafeSimpleText(title, "AT.Bold.14", ATScale(18), ATScale(16), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-                SafeSimpleText(AFK_FormatHuman(getSec()), "AT.Bold.28", ATScale(18), ATScale(36), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-            end
-            return card
+        tabsBar.PerformLayout = function(_, w, h)
+            local gap = ATScale(10)
+            local bw = math.floor((w - gap) / 2)
+            btnMe:SetPos(0, 0);          btnMe:SetSize(bw, h)
+            btnTop:SetPos(bw + gap, 0);  btnTop:SetSize(w - bw - gap, h)
         end
 
-        local sDay   = makeSummary(summaryWrap, "ЗА ДЕНЬ",    function() return AFK_GetTotals().today end, THEME.gold)
-        local sWeek  = makeSummary(summaryWrap, "ЗА НЕДЕЛЮ",  function() return AFK_GetTotals().week  end, THEME.green)
-        local sMonth = makeSummary(summaryWrap, "ЗА МЕСЯЦ",   function() return AFK_GetTotals().month end, Color(120, 191, 255))
-
-        summaryWrap.PerformLayout = function(_, w, h)
-            local gap = ATScale(12)
-            local cardW = math.floor((w - gap * 2) / 3)
-            sDay:SetPos(0, 0); sDay:SetSize(cardW, h)
-            sWeek:SetPos(cardW + gap, 0); sWeek:SetSize(cardW, h)
-            sMonth:SetPos((cardW + gap) * 2, 0); sMonth:SetSize(w - (cardW + gap) * 2, h)
-        end
-
-        CreateSectionLabel(scroll, "База данных AFK")
-
-        local searchBox = scroll:Add("DPanel"); searchBox:Dock(TOP); searchBox:SetTall(ATScale(72)); searchBox:DockMargin(0, 0, 0, ATScale(16))
-        searchBox.Paint = function(_, w, h)
-            PaintSubPanel(0, 0, w, h, ATScale(14))
-            SafeSimpleText("Поиск по SteamID", "AT.Light.14", ATScale(16), ATScale(10), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-        end
-
-        local searchEntry = searchBox:Add("DTextEntry")
-        searchEntry:SetFont("AT.Bold.18")
-        searchEntry:SetTextColor(color_white)
-        searchEntry:SetDrawBackground(false)
-        searchEntry:SetDrawBorder(false)
-        searchEntry:SetCursorColor(color_white)
-        searchEntry:SetHighlightColor(ColorAlpha(THEME.green, 70))
-        searchEntry:SetPlaceholderText("")
-        searchEntry.Paint = function(s, w, h)
-            s:DrawTextEntryText(color_white, THEME.green, color_white)
-            if string.Trim(s:GetValue() or "") == "" and not s:HasFocus() then
-                SafeSimpleText("STEAM_0:X:XXXXX...", "AT.Bold.18", 0, h * 0.5, Color(255, 255, 255, 110), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-            end
-        end
-        searchEntry.OnEnter = function(s)
-            if IsValid(s._AT_SearchBtn) then s._AT_SearchBtn:DoClick() end
-        end
-
-        local searchRes = scroll:Add("DPanel"); searchRes:Dock(TOP); searchRes:SetTall(0); searchRes.Paint = nil
-
-        local function OpenPlayerStatsFrame(d, tot)
-            if IsValid(UI_Frames.PlayerStats) then UI_Frames.PlayerStats:Remove() end
-
-            local fw, fh = ATScale(720), ATScale(560)
-            local frame = vgui.Create("DFrame")
-            UI_Frames.PlayerStats = frame
-            frame:SetSize(fw, fh)
-            frame:Center()
-            frame:SetTitle("")
-            frame:ShowCloseButton(false)
-            frame:SetDraggable(true)
-            frame:SetDeleteOnClose(true)
-            frame:MakePopup()
-
-            frame.Paint = function(_, w, h)
-                if AT.rndx then
-                    AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(10, 10, 10, 240))
-                    AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
-                    AT.rndx.Draw(ATScale(16), 0, 0, w, ATScale(4), THEME.green)
-                else
-                    surface.SetDrawColor(Color(10, 10, 10, 240))
-                    surface.DrawRect(0, 0, w, h)
-                    surface.SetDrawColor(THEME.green)
-                    surface.DrawRect(0, 0, w, ATScale(4))
-                end
-            end
-
-            local closeBtn = frame:Add("DButton")
-            closeBtn:SetText("")
-            closeBtn:SetSize(ATScale(32), ATScale(32))
-            closeBtn:SetPos(fw - ATScale(42), ATScale(14))
-            closeBtn.Paint = function(s, w, h)
-                if s:IsHovered() then
-                    if AT.rndx then
-                        AT.rndx.Draw(ATScale(6), 0, 0, w, h, THEME.redHover)
-                    else
-                        surface.SetDrawColor(THEME.redHover); surface.DrawRect(0, 0, w, h)
-                    end
-                end
-                surface.SetDrawColor(s:IsHovered() and color_white or THEME.inactive)
-                surface.SetMaterial(Config.Mats.CLOSE)
-                surface.DrawTexturedRect(ATScale(6), ATScale(6), w - ATScale(12), h - ATScale(12))
-            end
-            closeBtn.DoClick = function() PlayClick(); frame:Remove() end
-
-            local titleLbl = frame:Add("DLabel")
-            titleLbl:SetText("Статистика игрока")
-            titleLbl:SetFont("AT.Bold.24")
-            titleLbl:SetTextColor(color_white)
-            titleLbl:SetPos(ATScale(24), ATScale(18))
-            titleLbl:SizeToContents()
-
-            local sep = frame:Add("DPanel")
-            sep:SetPos(ATScale(20), ATScale(58))
-            sep:SetSize(fw - ATScale(40), 1)
-            sep.Paint = function(_, w, h)
-                surface.SetDrawColor(THEME.subBorder)
-                surface.DrawRect(0, 0, w, h)
-            end
-
-            local headerCard = frame:Add("DPanel")
-            headerCard:SetPos(ATScale(20), ATScale(74))
-            headerCard:SetSize(fw - ATScale(40), ATScale(86))
-            headerCard.Paint = function(_, w, h)
-                if AT.rndx then
-                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
-                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
-                    AT.rndx.Draw(ATScale(14), 0, 0, ATScale(4), h, THEME.green)
-                else
-                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
-                    surface.SetDrawColor(THEME.green); surface.DrawRect(0, 0, ATScale(4), h)
-                end
-
-                SafeSimpleText(d.nick or "Неизвестно", "AT.Bold.26", ATScale(20), ATScale(14), color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-                SafeSimpleText(d.steamid or "", "AT.Light.16", ATScale(20), ATScale(50), THEME.textSub, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-
-                local updTxt = "Обновлено: " .. (d.updated_at and os.date("%d.%m.%Y %H:%M", math.floor((d.updated_at or 0) / 1000)) or "—")
-                SafeSimpleText(updTxt, "AT.Light.14", w - ATScale(20), ATScale(16), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
-
-                local totalDays = 0
-                if d.days then for _ in pairs(d.days) do totalDays = totalDays + 1 end end
-                SafeSimpleText("Дней в базе: " .. totalDays, "AT.Light.14", w - ATScale(20), ATScale(40), THEME.textSub, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP)
-            end
-
-            local statsWrap = frame:Add("DPanel")
-            statsWrap:SetPos(ATScale(20), ATScale(172))
-            statsWrap:SetSize(fw - ATScale(40), ATScale(100))
-            statsWrap.Paint = nil
-
-            local statCards = {
-                { label = "СЕГОДНЯ",      getSec = function() return tot.today end,   color = THEME.gold },
-                { label = "ЗА НЕДЕЛЮ",    getSec = function() return tot.week end,    color = THEME.green },
-                { label = "ЗА МЕСЯЦ",     getSec = function() return tot.month end,   color = Color(120, 191, 255) },
-                { label = "ЗА ВСЁ ВРЕМЯ", getSec = function() return tot.allTime end, color = Color(200, 140, 255) },
-            }
-
-            statsWrap.PerformLayout = function(_, w, h)
-                local gap = ATScale(10)
-                local cardW = math.floor((w - gap * 3) / 4)
-                for i, child in ipairs(statsWrap:GetChildren()) do
-                    child:SetPos((i - 1) * (cardW + gap), 0)
-                    child:SetSize(i == 4 and (w - (cardW + gap) * 3) or cardW, h)
-                end
-            end
-
-            for _, sc in ipairs(statCards) do
-                local sCard = statsWrap:Add("DPanel")
-                sCard.Paint = function(_, w, h)
-                    if AT.rndx then
-                        AT.rndx.Draw(ATScale(12), 0, 0, w, h, THEME.subBg)
-                        AT.rndx.DrawOutlined(ATScale(12), 0, 0, w, h, ColorAlpha(sc.color, 60), 1)
-                        AT.rndx.Draw(ATScale(12), 0, 0, w, ATScale(3), sc.color)
-                    else
-                        surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
-                        surface.SetDrawColor(sc.color); surface.DrawRect(0, 0, w, ATScale(3))
-                    end
-                    SafeSimpleText(sc.label, "AT.Bold.14", w * 0.5, ATScale(16), sc.color, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                    SafeSimpleText(AFK_FormatHuman(sc.getSec()), "AT.Bold.24", w * 0.5, h * 0.5 + ATScale(10), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-                end
-            end
-
-            local chartLabel = frame:Add("DLabel")
-            chartLabel:SetText("Последние 7 дней")
-            chartLabel:SetFont("AT.Bold.20")
-            chartLabel:SetTextColor(color_white)
-            chartLabel:SetPos(ATScale(24), ATScale(286))
-            chartLabel:SizeToContents()
-
-            local chartCard = frame:Add("DPanel")
-            chartCard:SetPos(ATScale(20), ATScale(316))
-            chartCard:SetSize(fw - ATScale(40), fh - ATScale(336))
-            chartCard.hoveredBar = -1
-            chartCard.Paint = function(s, w, h)
-                if AT.rndx then
-                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
-                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, THEME.subBorder, 1)
-                else
-                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
-                end
-
-                local chartData = AFK_GetExternalLastNDays(d.days, 7)
-                local maxSec = 1
-                for _, cd in ipairs(chartData) do if cd.seconds > maxSec then maxSec = cd.seconds end end
-
-                local padX, padTop, padBottom = ATScale(24), ATScale(20), ATScale(44)
-                local cW = math.max(w - padX * 2, 1)
-                local cH = math.max(h - padTop - padBottom, 1)
-                local barCount = #chartData
-                if barCount <= 0 then return end
-                local gap = ATScale(10)
-                local barW = math.max(1, (cW - gap * (barCount - 1)) / barCount)
-
-                if AT.rndx then
-                    for gi = 0, 3 do AT.rndx.Draw(256, padX, padTop + cH * (gi / 3), cW, 1, Color(255, 255, 255, 10)) end
-                end
-
-                local mx, my = s:LocalCursorPos()
-                s.hoveredBar = -1
-                for i, cd in ipairs(chartData) do
-                    local bx = padX + (i - 1) * (barW + gap)
-                    local frac = cd.seconds / maxSec
-                    local bh = math.max(ATScale(2), cH * frac)
-                    local by = padTop + cH - bh
-
-                    local col
-                    if cd.isToday then col = THEME.gold
-                    elseif cd.seconds == 0 then col = Color(60, 60, 70)
-                    else
-                        local t = math.Clamp(cd.seconds / 14400, 0, 1)
-                        col = Color(math.Round(80 + 175 * t), math.Round(220 - 170 * t), math.Round(120 - 80 * t))
-                    end
-
-                    if mx >= bx and mx <= bx + barW and my >= padTop and my <= padTop + cH then
-                        s.hoveredBar = i
-                        col = Color(math.Clamp(col.r + 40, 0, 255), math.Clamp(col.g + 40, 0, 255), math.Clamp(col.b + 40, 0, 255))
-                    end
-
-                    if AT.rndx then
-                        AT.rndx.Draw(ATScale(5), bx, by, barW, bh, col)
-                    else
-                        surface.SetDrawColor(col); surface.DrawRect(bx, by, barW, bh)
-                    end
-
-                    if cd.seconds > 0 then
-                        SafeSimpleText(AFK_FormatHuman(cd.seconds), "AT.Light.13", bx + barW * 0.5, by - ATScale(4), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM)
-                    end
-                    local lc = cd.isToday and THEME.gold or color_white
-                    SafeSimpleText(cd.label, "AT.Bold.14", bx + barW * 0.5, padTop + cH + ATScale(8), lc, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                    SafeSimpleText(cd.shortDate, "AT.Light.12", bx + barW * 0.5, padTop + cH + ATScale(26), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                end
-            end
-        end
-
-        local function OpenErrorFrame(steamid)
-            if IsValid(UI_Frames.PlayerStatsError) then UI_Frames.PlayerStatsError:Remove() end
-
-            local fw, fh = ATScale(520), ATScale(240)
-            local frame = vgui.Create("DFrame")
-            UI_Frames.PlayerStatsError = frame
-            frame:SetSize(fw, fh)
-            frame:Center()
-            frame:SetTitle("")
-            frame:ShowCloseButton(false)
-            frame:SetDraggable(true)
-            frame:SetDeleteOnClose(true)
-            frame:MakePopup()
-
-            frame.Paint = function(_, w, h)
-                if AT.rndx then
-                    AT.rndx.Draw(ATScale(16), 0, 0, w, h, Color(10, 10, 10, 240))
-                    AT.rndx.DrawOutlined(ATScale(16), 0, 0, w, h, THEME.subBorder, 1)
-                    AT.rndx.Draw(ATScale(16), 0, 0, w, ATScale(4), THEME.red)
-                else
-                    surface.SetDrawColor(Color(10, 10, 10, 240)); surface.DrawRect(0, 0, w, h)
-                    surface.SetDrawColor(THEME.red); surface.DrawRect(0, 0, w, ATScale(4))
-                end
-            end
-
-            local closeBtn = frame:Add("DButton")
-            closeBtn:SetText("")
-            closeBtn:SetSize(ATScale(32), ATScale(32))
-            closeBtn:SetPos(fw - ATScale(42), ATScale(14))
-            closeBtn.Paint = function(s, w, h)
-                if s:IsHovered() then
-                    if AT.rndx then AT.rndx.Draw(ATScale(6), 0, 0, w, h, THEME.redHover)
-                    else surface.SetDrawColor(THEME.redHover); surface.DrawRect(0, 0, w, h) end
-                end
-                surface.SetDrawColor(s:IsHovered() and color_white or THEME.inactive)
-                surface.SetMaterial(Config.Mats.CLOSE)
-                surface.DrawTexturedRect(ATScale(6), ATScale(6), w - ATScale(12), h - ATScale(12))
-            end
-            closeBtn.DoClick = function() PlayClick(); frame:Remove() end
-
-            local titleLbl = frame:Add("DLabel")
-            titleLbl:SetText("Ошибка поиска")
-            titleLbl:SetFont("AT.Bold.22")
-            titleLbl:SetTextColor(color_white)
-            titleLbl:SetPos(ATScale(24), ATScale(20))
-            titleLbl:SizeToContents()
-
-            local sep = frame:Add("DPanel")
-            sep:SetPos(ATScale(20), ATScale(58))
-            sep:SetSize(fw - ATScale(40), 1)
-            sep.Paint = function(_, w, h)
-                surface.SetDrawColor(THEME.subBorder); surface.DrawRect(0, 0, w, h)
-            end
-
-            local errCard = frame:Add("DPanel")
-            errCard:SetPos(ATScale(20), ATScale(74))
-            errCard:SetSize(fw - ATScale(40), fh - ATScale(94))
-            errCard.Paint = function(_, w, h)
-                if AT.rndx then
-                    AT.rndx.Draw(ATScale(14), 0, 0, w, h, THEME.subBg)
-                    AT.rndx.DrawOutlined(ATScale(14), 0, 0, w, h, ColorAlpha(THEME.red, 60), 1)
-                    AT.rndx.Draw(ATScale(14), 0, 0, ATScale(4), h, THEME.red)
-                else
-                    surface.SetDrawColor(THEME.subBg); surface.DrawRect(0, 0, w, h)
-                    surface.SetDrawColor(THEME.red); surface.DrawRect(0, 0, ATScale(4), h)
-                end
-
-                SafeSimpleText("SteamID не найден", "AT.Bold.24", w * 0.5, ATScale(24), THEME.red, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                SafeSimpleText((steamid ~= nil and steamid ~= "") and steamid or "—", "AT.Bold.18", w * 0.5, ATScale(60), color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                SafeSimpleText("Данный SteamID отсутствует в базе данных.", "AT.Light.16", w * 0.5, ATScale(94), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-                SafeSimpleText("Проверьте правильность ввода и попробуйте снова.", "AT.Light.14", w * 0.5, ATScale(118), THEME.textSub, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
-            end
-        end
-
-        local searchCooldown = 15
-        local activeNotify = nil
-
-        local searchBtn = CreatePrimaryButton(searchBox, "Найти", function()
-            local ct = CurTime()
-            if ct < searchCooldown then
-                surface.PlaySound("buttons/button10.wav")
-                
-                if IsValid(activeNotify) then activeNotify:Remove() end
-                
-                local remain = math.ceil(searchCooldown - ct)
-                local nw, nh = ATScale(340), ATScale(46)
-                
-                activeNotify = vgui.Create("DPanel")
-                activeNotify:SetSize(nw, nh)
-                activeNotify:SetPos(ScrW() * 0.5 - nw * 0.5, -nh)
-                activeNotify:SetDrawOnTop(true)
-                
-                local st = SysTime()
-                activeNotify.Paint = function(s, w, h)
-                    local life = SysTime() - st
-                    if life > 2 then s:SetAlpha(math.max(0, 255 - (life - 2) * 1000)) end
-                    
-                    if AT.rndx then
-                        AT.rndx.Draw(ATScale(8), 0, 0, w, h, Color(25, 25, 25, 240))
-                        AT.rndx.DrawOutlined(ATScale(8), 0, 0, w, h, THEME.red, 1)
-                    end
-                    
-                    SafeSimpleText("Подождите " .. remain .. " сек. перед следующим поиском", "AT.Bold.16", w * 0.5, h * 0.5, THEME.red, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-                end
-                
-                activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, ATScale(20), 0.25, 0, -1)
-                timer.Simple(2.5, function()
-                    if IsValid(activeNotify) then 
-                        activeNotify:MoveTo(ScrW() * 0.5 - nw * 0.5, -nh, 0.25, 0, -1, function()
-                            if IsValid(activeNotify) then activeNotify:Remove() end
-                        end)
-                    end
-                end)
-                
-                return 
-            end
-            
-            local q = string.Trim(searchEntry:GetValue() or "")
-            if q == "" then return end
-
-            searchCooldown = ct + 15
-
-            local targetSid = string.match(string.upper(q), "^STEAM_%d:%d:%d+$") and string.upper(q) or nil
-
-            if not targetSid then
-                OpenErrorFrame(q)
-                return
-            end
-
-            searchRes:Clear(); searchRes:SetTall(ATScale(60))
-            local load = CreateCard(searchRes, ATScale(60), 0)
-            load.Paint = function(_, w, h)
-                PaintSubPanel(0, 0, w, h, ATScale(14))
-                SafeSimpleText("Загрузка данных для " .. targetSid .. "...", "AT.Bold.18", ATScale(16), h * 0.5, THEME.gold, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-            end
-
-            http.Fetch(AT.DISCORD_API_BASE .. "/afk/get?steamid=" .. targetSid, function(body)
-                if IsValid(searchRes) then searchRes:Clear(); searchRes:SetTall(0) end
-                local data = util.JSONToTable(body or "")
-                if not data or not data.ok or not data.data then
-                    OpenErrorFrame(targetSid)
-                    return
-                end
-
-                local dd = data.data
-                local tot = AFK_GetExternalTotals(dd.days)
-                OpenPlayerStatsFrame(dd, tot)
-            end, function()
-                if not IsValid(searchRes) then return end
-                searchRes:Clear(); searchRes:SetTall(ATScale(60))
-                local err = CreateCard(searchRes, ATScale(60), 0)
-                err.Paint = function(_, w, h)
-                    PaintSubPanel(0, 0, w, h, ATScale(14))
-                    SafeSimpleText("Ошибка подключения к API.", "AT.Bold.18", ATScale(16), h * 0.5, THEME.red, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                end
-            end)
-        end)
-        searchBtn:SetSize(ATScale(100), ATScale(46))
-        searchEntry._AT_SearchBtn = searchBtn
-
-        searchBox.PerformLayout = function(_, w, h)
-            local btnW, btnH = searchBtn:GetWide(), searchBtn:GetTall()
-            searchBtn:SetPos(w - btnW - ATScale(10), h * 0.5 - btnH * 0.5)
-            searchEntry:SetPos(ATScale(16), ATScale(32))
-            searchEntry:SetSize(w - btnW - ATScale(32), h - ATScale(40))
-        end
+        RebuildPage()
 
     elseif AT.activeCatIndex == 7 then
         local scroll = content:Add("DScrollPanel"); scroll:Dock(FILL); StyleScrollbar(scroll)
