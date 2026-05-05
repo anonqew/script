@@ -1593,6 +1593,21 @@ local function ReportsMonthBars(dailyTbl)
     return out
 end
 
+local function OnlineMonthBars(dailyTbl)
+    local rows = RB_MonthArray(dailyTbl)
+    local out = {}
+    for _, d in ipairs(rows) do
+        table.insert(out, {
+            label    = tostring(d.day),
+            sub      = nil,
+            value    = d.value,
+            isToday  = d.isToday,
+            isFuture = d.isFuture
+        })
+    end
+    return out
+end
+
 local function MakeRankBadge(parent, rank)
     local p = parent:Add("DPanel")
     p:Dock(TOP); p:SetTall(ATScale(36))
@@ -1778,6 +1793,17 @@ OpenAdminProfileFrame = function(row)
         function(v) return RB_FormatCount(v) end,
         function(d, frac)
             return Color(math.Round(60 + 195 * frac), math.Round(190 - 50 * frac), math.Round(120 - 90 * frac))
+        end
+    )
+
+    CreateSectionLabel(scroll, "Онлайн по дням (текущий месяц)")
+
+    MakeBarChart(scroll, ATScale(220),
+        { padX = ATScale(20), padTop = ATScale(20), padBot = ATScale(34) },
+        function() return OnlineMonthBars(dailyOnline) end,
+        function(v) return AFK_FormatHuman(v) end,
+        function(d, frac)
+            return Color(math.Round(40 + 80 * frac), math.Round(80 + 120 * frac), math.Round(160 + 95 * frac))
         end
     )
 
@@ -2004,6 +2030,16 @@ local function BuildMyStatsPage(parent)
             function(v) return RB_FormatCount(v) end,
             function(d, frac)
                 return Color(math.Round(60 + 195 * frac), math.Round(190 - 50 * frac), math.Round(120 - 90 * frac))
+            end
+        )
+
+        CreateSectionLabel(scroll, "Онлайн по дням (текущий месяц)")
+        MakeBarChart(scroll, ATScale(220),
+            { padX = ATScale(20), padTop = ATScale(20), padBot = ATScale(34) },
+            function() return OnlineMonthBars(dailyOnline) end,
+            function(v) return AFK_FormatHuman(v) end,
+            function(d, frac)
+                return Color(math.Round(40 + 80 * frac), math.Round(80 + 120 * frac), math.Round(160 + 95 * frac))
             end
         )
     end)
